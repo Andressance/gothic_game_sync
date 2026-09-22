@@ -1,0 +1,39 @@
+# Visual Studio and MSBuild
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Build output
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+[Gg]1 [Rr]elease/
+[Gg]1A [Rr]elease/
+[Gg]2 [Rr]elease/
+[Gg]2A [Rr]elease/
+GothicSaveSync/[Gg]1 [Rr]elease/
+GothicSaveSync/[Gg]1A [Rr]elease/
+GothicSaveSync/[Gg]2 [Rr]elease/
+GothicSaveSync/[Gg]2A [Rr]elease/
+GothicSaveSync/[Rr]elease/
+GothicSaveSync/GothicSaveSync/
+
+# Generated compiler files
+*.dll
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.res
+*.tlog/
+*.lastbuildstate
+*.recipe
+
+# Local save-sync data
+save-sync/
