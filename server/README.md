@@ -39,6 +39,7 @@ $env:GOTHICSAVE_STORAGE = "D:\GothicSaveSyncStorage"
 | Método | Ruta | Uso |
 | --- | --- | --- |
 | `GET` | `/health` | Comprobar que el servicio está activo |
+| `GET` | `/status` | Comprobar que el servicio y su almacenamiento están disponibles |
 | `POST` | `/saves/{save_id}` | Subir o reemplazar un `.gss` como multipart `save` |
 | `GET` | `/saves` | Listar partidas disponibles, ordenadas por `uploaded_at` descendente |
 | `GET` | `/saves/{save_id}` | Obtener metadatos |

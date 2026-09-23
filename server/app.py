@@ -20,6 +20,7 @@ class SaveInfo(BaseModel):
     filename: str
     size: int
     uploaded_at: datetime
+    uploaded_at_epoch: int = 0
 
 
 app = FastAPI(
@@ -102,6 +103,7 @@ async def upload_save(save_id: str, save: UploadFile = File(...)) -> SaveInfo:
         filename=f"{save_id}.gss",
         size=destination.stat().st_size,
         uploaded_at=uploaded_at,
+        uploaded_at_epoch=int(uploaded_at.timestamp()),
     )
     metadata_path(save_id).write_text(info.model_dump_json(), encoding="utf-8")
     return info

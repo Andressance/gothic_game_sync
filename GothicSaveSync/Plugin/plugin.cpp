@@ -23,6 +23,7 @@ cexport void Game_PreLoop() {
 }
 
 cexport void Game_Loop() {
+  RemoteSync::PollUi();
 }
 
 cexport void Game_PostLoop() {

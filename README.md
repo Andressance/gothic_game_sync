@@ -64,9 +64,14 @@ ordenada por ultima modificacion en `<Gothic>/save-sync/remote.json`. Al
 terminar cada guardado, sube automaticamente el paquete `.gss` del slot a
 `POST /saves/{slot}` sin bloquear el hilo principal.
 
-En esta fase la consulta remota no reemplaza silenciosamente una partida local.
-La descarga y resolucion visual de conflictos se añadiran con la interfaz del
-menu.
+Antes de consultar las partidas, el plugin verifica `GET /status`. La
+interfaz muestra si el servidor remoto esta disponible y permite continuar
+usando las partidas locales aunque no haya conexion.
+
+Si existen paquetes remotos mas recientes, el juego muestra una pregunta de
+confirmacion. Si se acepta, los paquetes se descargan a `save-sync/pending`.
+Al cargar cada slot, el flujo de restauracion existente conserva el guardado
+local en `save-sync/backup` antes de reemplazarlo.
 
 ## Flujo de archivos
 
@@ -145,27 +150,32 @@ Las configuraciones especificas disponibles son `G1 Release`, `G1A Release`, `G2
 ## Estado y roadmap
 
 ```mermaid
-flowchart LR
-    A[Hooks de guardado y carga<br/>Completado] --> B[Snapshots con manifiesto<br/>Completado]
-    B --> C[Backup y restauracion segura<br/>Completado]
-    C --> D[Paquetizado .gss<br/>Completado]
-    D --> E[API FastAPI inicial<br/>Completado]
-    E --> F[Cliente HTTP y subida automatica<br/>Completado]
-    F --> G[Comparacion y descarga remota<br/>Siguiente]
-    G --> H[Interfaz dentro del juego<br/>Pendiente]
+flowchart TD
+    A[Hooks de guardado y carga<br/>Completado]
+    B[Snapshots con manifiesto<br/>Completado]
+    C[Backup y restauracion segura<br/>Completado]
+    D[Paquetizado .gss<br/>Completado]
+    E[API FastAPI inicial<br/>Completado]
+    F[Cliente HTTP y subida automatica<br/>Completado]
+    G[Comparacion y descarga remota<br/>Completado]
+    H[Estado del servidor y dialogo de confirmacion<br/>Completado]
+    I[Menu visual de sincronizacion<br/>Pendiente]
+    J[Autenticacion y resolucion de conflictos<br/>Pendiente]
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
 Proximos pasos:
 
-1. Comparar la fecha local y remota por slot y descargar la mas reciente.
-2. Añadir identificacion de dispositivo y autenticacion.
-3. Añadir compresion opcional al paquete.
-4. Añadir una interfaz de sincronizacion al menu de Gothic.
-5. Resolver conflictos entre partidas modificadas en dos dispositivos.
+1. Añadir identificacion de dispositivo y autenticacion.
+2. Añadir compresion opcional al paquete.
+3. Crear un menu visual de sincronizacion para Gothic.
+4. Resolver conflictos entre partidas modificadas en dos dispositivos.
 
 ## Limitaciones actuales
 
-- El plugin consulta y sube paquetes, pero todavía no descarga automáticamente una partida remota.
+- La sincronizacion requiere aceptar el aviso del juego antes de descargar.
+- La interfaz actual usa los dialogos de Union; todavía no añade controles propios al menú nativo.
 - Render necesita almacenamiento persistente o almacenamiento de objetos para conservar paquetes tras reinicios.
 - La restauracion automatica se ejecuta al cargar un slot compatible que tenga un snapshot pendiente.
 - La prueba actual es de compilacion; falta validar el ciclo completo con una instalacion real de Gothic y una partida real.

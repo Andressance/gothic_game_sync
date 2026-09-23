@@ -4,6 +4,7 @@
 namespace RemoteSync {
   void Start();
   void UploadSave( const char* saveID, const char* packagePath );
+  void PollUi();
   void UploadLatestSave();
 }
 
