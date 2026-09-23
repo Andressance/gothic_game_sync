@@ -386,6 +386,7 @@
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Plugin\RemoteSync.h" />
     <ClInclude Include="Plugin\SaveSync.h" />
     <ClInclude Include="GothicAPI\Gothic_II_Addon\API\oAiHuman.h" />
     <ClInclude Include="GothicAPI\Gothic_II_Addon\API\oAiShoot.h" />
@@ -1245,6 +1246,7 @@
     <ClInclude Include="UnionSDK\vdfs\Vdfs.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Plugin\RemoteSync.cpp" />
     <ClCompile Include="Plugin\SaveSync.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="GothicAPI\Gothic_II_Addon\G2A_ClassDef.cpp" />

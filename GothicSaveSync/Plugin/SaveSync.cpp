@@ -7,6 +7,8 @@
 #include <string.h>
 
 namespace {
+  char LatestPackagePath[MAX_PATH] = {};
+  char LatestSaveID[MAX_PATH] = {};
   const char PackageMagic[] = "GSSPKG1";
   const unsigned int PackageVersion = 1;
   const unsigned int PackageBufferSize = 64 * 1024;
@@ -415,7 +417,10 @@ namespace SaveSync {
 
     RemoveDirectoryTree( stagingDirectory );
     DeleteFileA( target );
-    MoveFileA( stagingPackage, target );
+    if( MoveFileA( stagingPackage, target ) != 0 ) {
+      strcpy_s( LatestPackagePath, target );
+      strcpy_s( LatestSaveID, slotName );
+    }
   }
 
   void OnLoadBegin() {
@@ -463,5 +468,13 @@ namespace SaveSync {
     if( !ReplaceDirectory( staging, source ) && GetFileAttributesA( backup ) != INVALID_FILE_ATTRIBUTES )
       ReplaceDirectory( backup, source );
     RemoveDirectoryTree( staging );
+  }
+
+  const char* GetLatestPackagePath() {
+    return LatestPackagePath;
+  }
+
+  const char* GetLatestSaveID() {
+    return LatestSaveID;
   }
 }

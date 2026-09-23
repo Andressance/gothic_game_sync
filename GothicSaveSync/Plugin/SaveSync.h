@@ -4,6 +4,8 @@
 namespace SaveSync {
   void OnSaveEnd();
   void OnLoadBegin();
+  const char* GetLatestPackagePath();
+  const char* GetLatestSaveID();
 }
 
 #endif

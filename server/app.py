@@ -144,3 +144,8 @@ async def delete_save(save_id: str) -> None:
     metadata_path(save_id).unlink(missing_ok=True)
 
 
+@app.get("/status")
+async def status() -> dict[str, str]:
+    if not STORAGE_DIR.is_dir():
+        raise HTTPException(status_code=500, detail="Storage directory is not available.")
+    return {"status": "ok"}

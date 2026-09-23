@@ -2,8 +2,7 @@
 
 Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada como plugin de Union.
 
-> Estado actual: snapshots locales paquetizados y restauracion segura.
-> El servidor HTTP inicial ya esta implementado; falta conectarlo al plugin.
+> Estado actual: snapshots locales paquetizados, restauracion segura y sincronizacion HTTP basica.
 
 ## Ultimos cambios
 
@@ -12,6 +11,8 @@ Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada com
 - Añadida restauracion segura con validacion de hash y backup automatico.
 - Añadido un servicio web FastAPI para subir, listar, descargar y eliminar paquetes.
 - Añadido soporte Docker preparado para desplegar el servidor en Render.
+- Añadido cliente WinHTTP en segundo plano para consultar y subir partidas.
+- Añadida configuracion `.env` para indicar la URL del servidor.
 
 Documentacion directa del servidor: [server/README.md](server/README.md)
 
@@ -45,9 +46,27 @@ flowchart LR
     B --> R[Restauracion atomica]
     R --> C[savegameN listo para cargar]
 
-    P -. futuro HTTPS .-> A[Servidor FastAPI]
-    A -. futuro descarga .-> L
+    P -->|WinHTTP en segundo plano| A[Servidor FastAPI]
+    A -. descarga pendiente .-> L
 ```
+
+## Sincronizacion con servidor
+
+El plugin busca un archivo `.env` en la carpeta principal de Gothic, junto al
+ejecutable del juego. Se puede crear copiando [.env.example](.env.example):
+
+```env
+GOTHICSAVE_SERVER_URL=https://tu-servicio.onrender.com
+```
+
+Al arrancar, consulta `GET /saves` en segundo plano y guarda la respuesta
+ordenada por ultima modificacion en `<Gothic>/save-sync/remote.json`. Al
+terminar cada guardado, sube automaticamente el paquete `.gss` del slot a
+`POST /saves/{slot}` sin bloquear el hilo principal.
+
+En esta fase la consulta remota no reemplaza silenciosamente una partida local.
+La descarga y resolucion visual de conflictos se añadiran con la interfaz del
+menu.
 
 ## Flujo de archivos
 
@@ -131,22 +150,22 @@ flowchart LR
     B --> C[Backup y restauracion segura<br/>Completado]
     C --> D[Paquetizado .gss<br/>Completado]
     D --> E[API FastAPI inicial<br/>Completado]
-    E --> F[Compresion del paquete<br/>Siguiente]
-    F --> G[Cliente HTTPS en el plugin<br/>Pendiente]
+    E --> F[Cliente HTTP y subida automatica<br/>Completado]
+    F --> G[Comparacion y descarga remota<br/>Siguiente]
     G --> H[Interfaz dentro del juego<br/>Pendiente]
 ```
 
 Proximos pasos:
 
-1. Añadir compresion opcional al paquete.
-2. Conectar el plugin C++ con la API mediante HTTPS.
-3. Implementar identificacion de dispositivo y lista de partidas remotas.
+1. Comparar la fecha local y remota por slot y descargar la mas reciente.
+2. Añadir identificacion de dispositivo y autenticacion.
+3. Añadir compresion opcional al paquete.
 4. Añadir una interfaz de sincronizacion al menu de Gothic.
 5. Resolver conflictos entre partidas modificadas en dos dispositivos.
 
 ## Limitaciones actuales
 
-- El servidor existe, pero el plugin todavía no realiza peticiones HTTPS.
+- El plugin consulta y sube paquetes, pero todavía no descarga automáticamente una partida remota.
 - Render necesita almacenamiento persistente o almacenamiento de objetos para conservar paquetes tras reinicios.
 - La restauracion automatica se ejecuta al cargar un slot compatible que tenga un snapshot pendiente.
 - La prueba actual es de compilacion; falta validar el ciclo completo con una instalacion real de Gothic y una partida real.

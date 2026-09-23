@@ -1,6 +1,7 @@
 #include "plugin.h"
 #include "UnionAfx.h"
 #include "SaveSync.h"
+#include "RemoteSync.h"
 
 extern cppimport UnionCore::TSaveLoadGameInfo UnionCore::SaveLoadGameInfo;
 
@@ -12,6 +13,7 @@ cexport void Game_Entry() {
 }
 
 cexport void Game_Init() {
+  RemoteSync::Start();
 }
 
 cexport void Game_Exit() {
@@ -34,6 +36,9 @@ cexport void Game_SaveBegin() {
 
 cexport void Game_SaveEnd() {
   SaveSync::OnSaveEnd();
+  if( SaveSync::GetLatestPackagePath()[0] != 0 )
+    RemoteSync::UploadSave( SaveSync::GetLatestSaveID(),
+      SaveSync::GetLatestPackagePath() );
 }
 
 void LoadBegin() {
