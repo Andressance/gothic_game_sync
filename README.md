@@ -2,16 +2,27 @@
 
 Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada como plugin de Union.
 
-> Estado actual: primera version funcional de snapshots locales y restauracion segura.
-> La sincronizacion remota todavia esta en el roadmap.
+> Estado actual: snapshots locales paquetizados y restauracion segura.
+> El servidor HTTP inicial ya esta implementado; falta conectarlo al plugin.
+
+## Ultimos cambios
+
+- Renombrado el proyecto y la carpeta principal a `GothicSaveSync`.
+- Añadida la paquetizacion binaria `.gss` de partidas guardadas.
+- Añadida restauracion segura con validacion de hash y backup automatico.
+- Añadido un servicio web FastAPI para subir, listar, descargar y eliminar paquetes.
+- Añadido soporte Docker preparado para desplegar el servidor en Render.
+
+Documentacion directa del servidor: [server/README.md](server/README.md)
 
 ## Que hace ahora
 
 GothicSaveSync observa el ciclo de guardado y carga del juego:
 
 - Detecta el slot al terminar un guardado.
-- Copia el slot completo sin modificar el guardado original durante la copia.
+- Empaqueta el slot completo en un unico archivo `.gss` sin modificar el guardado original durante la copia.
 - Escribe un manifiesto con el slot y el hash del ejecutable de Gothic.
+- Valida la cabecera del paquete, el slot, el hash y las rutas internas antes de desempaquetar.
 - Valida la compatibilidad antes de restaurar una partida.
 - Conserva un backup del slot actual antes de reemplazarlo.
 - Recupera el backup si la restauracion falla.
@@ -24,8 +35,8 @@ flowchart LR
     G[Gothic + Union] --> E[Game_SaveEnd]
     E --> S[SaveSync]
     S --> T[Snapshot temporal]
-    T --> P[save-sync/pending/savegameN]
-    P --> M[manifest.txt]
+    T --> P[save-sync/pending/savegameN.gss]
+    P --> M[manifest.txt dentro del paquete]
 
     G --> L[Game_LoadBegin_SaveGame]
     L --> V{Manifiesto compatible?}
@@ -33,6 +44,9 @@ flowchart LR
     V -- Si --> B[Backup del slot actual]
     B --> R[Restauracion atomica]
     R --> C[savegameN listo para cargar]
+
+    P -. futuro HTTPS .-> A[Servidor FastAPI]
+    A -. futuro descarga .-> L
 ```
 
 ## Flujo de archivos
@@ -42,13 +56,27 @@ flowchart LR
 ├── savegame1/                    # Guardado original de Gothic
 └── save-sync/
     ├── pending/
-    │   └── savegame1/            # Snapshot que se puede sincronizar
-    │       └── manifest.txt      # Formato, slot y gothic_hash
+    │   └── savegame1.gss         # Paquete transportable
     └── backup/
         └── savegame1/            # Backup antes de restaurar
 ```
 
-Los snapshots se preparan primero en una carpeta temporal. Solo se reemplaza el snapshot anterior cuando la copia completa ha terminado correctamente.
+Los snapshots se preparan primero en carpetas y archivos temporales. Solo se reemplaza el paquete anterior cuando la copia y la escritura completa han terminado correctamente.
+
+## Formato `.gss`
+
+El paquete usa un formato binario propio y versionado:
+
+```text
+cabecera: magic, version, slot, gothic_hash, numero_de_archivos
+repetido por archivo:
+    longitud de ruta relativa
+    tamano del archivo
+    ruta relativa
+    contenido binario
+```
+
+Las rutas absolutas y los segmentos `..` se rechazan durante la lectura. Esto permite transportar una partida como un solo archivo sin depender de ZIP ni de librerias externas. La compresion se puede añadir despues sin cambiar el flujo de validacion.
 
 ## Proyecto
 
@@ -70,6 +98,8 @@ GothicSaveSync/
 ```
 
 La carpeta `GothicSaveSync` contiene el plugin, las APIs de Gothic y el SDK de Union. El proyecto compilable tambien se llama `GothicSaveSync`.
+
+El servicio web esta en `server/` y tiene su propia documentacion, dependencias y [Dockerfile](server/Dockerfile) para Render.
 
 ## Compilar
 
@@ -96,31 +126,28 @@ Las configuraciones especificas disponibles son `G1 Release`, `G1A Release`, `G2
 ## Estado y roadmap
 
 ```mermaid
-gantt
-    title GothicSaveSync
-    dateFormat  YYYY-MM-DD
-    section Base local
-    Hooks de guardado y carga       :done, hooks, 2026-09-22, 1d
-    Snapshots con manifiesto         :done, snapshots, 2026-09-22, 1d
-    Backup y restauracion segura    :done, restore, 2026-09-22, 1d
-    section Sincronizacion remota
-    Paquetizado comprimido           :active, package, after restore, 3d
-    Cliente HTTPS                    :https, after package, 5d
-    API y almacenamiento             :api, after https, 5d
-    Interfaz dentro del juego        :ui, after api, 5d
+flowchart LR
+    A[Hooks de guardado y carga<br/>Completado] --> B[Snapshots con manifiesto<br/>Completado]
+    B --> C[Backup y restauracion segura<br/>Completado]
+    C --> D[Paquetizado .gss<br/>Completado]
+    D --> E[API FastAPI inicial<br/>Completado]
+    E --> F[Compresion del paquete<br/>Siguiente]
+    F --> G[Cliente HTTPS en el plugin<br/>Pendiente]
+    G --> H[Interfaz dentro del juego<br/>Pendiente]
 ```
 
 Proximos pasos:
 
-1. Empaquetar cada snapshot en un archivo transportable.
-2. Añadir subida y descarga HTTPS fuera del hilo principal del juego.
+1. Añadir compresion opcional al paquete.
+2. Conectar el plugin C++ con la API mediante HTTPS.
 3. Implementar identificacion de dispositivo y lista de partidas remotas.
 4. Añadir una interfaz de sincronizacion al menu de Gothic.
 5. Resolver conflictos entre partidas modificadas en dos dispositivos.
 
 ## Limitaciones actuales
 
-- Todavia no hay servidor ni subida a Internet.
+- El servidor existe, pero el plugin todavía no realiza peticiones HTTPS.
+- Render necesita almacenamiento persistente o almacenamiento de objetos para conservar paquetes tras reinicios.
 - La restauracion automatica se ejecuta al cargar un slot compatible que tenga un snapshot pendiente.
 - La prueba actual es de compilacion; falta validar el ciclo completo con una instalacion real de Gothic y una partida real.
 

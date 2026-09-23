@@ -37,3 +37,9 @@ GothicSaveSync/GothicSaveSync/
 
 # Local save-sync data
 save-sync/
+
+# Python service
+__pycache__/
+*.py[cod]
+.venv/
+server/storage/
