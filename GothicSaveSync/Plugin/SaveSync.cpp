@@ -477,4 +477,42 @@ namespace SaveSync {
   const char* GetLatestSaveID() {
     return LatestSaveID;
   }
+
+  bool RestoreBackup() {
+    int slotID = UnionCore::SaveLoadGameInfo.slotID;
+    if( slotID < 0 )
+      return false;
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    char root[MAX_PATH];
+    char source[MAX_PATH];
+    char backup[MAX_PATH];
+    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveDirectory );
+    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveDirectory, slotName );
+    _snprintf_s( backup, sizeof(backup), _TRUNCATE, "%s\\backup\\%s", root, slotName );
+    if( GetFileAttributesA( backup ) == INVALID_FILE_ATTRIBUTES )
+      return false;
+    char staging[MAX_PATH];
+    _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s\\restore.tmp", root );
+    RemoveDirectoryTree( staging );
+    if( !CopyDirectory( backup, staging ) )
+      return false;
+    RemoveDirectoryTree( source );
+    if( MoveFileA( staging, source ) != 0 )
+      return true;
+    RemoveDirectoryTree( staging );
+    return false;
+  }
+
+  bool HasBackup() {
+    int slotID = UnionCore::SaveLoadGameInfo.slotID;
+    if( slotID < 0 )
+      return false;
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    char path[MAX_PATH];
+    _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\save-sync\\backup\\%s",
+      saveDirectory, slotName );
+    return GetFileAttributesA( path ) != INVALID_FILE_ATTRIBUTES;
+  }
 }

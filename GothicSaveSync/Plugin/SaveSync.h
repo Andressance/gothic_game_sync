@@ -6,6 +6,8 @@ namespace SaveSync {
   void OnLoadBegin();
   const char* GetLatestPackagePath();
   const char* GetLatestSaveID();
+  bool RestoreBackup();
+  bool HasBackup();
 }
 
 #endif

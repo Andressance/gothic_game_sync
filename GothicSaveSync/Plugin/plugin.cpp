@@ -2,6 +2,7 @@
 #include "UnionAfx.h"
 #include "SaveSync.h"
 #include "RemoteSync.h"
+#include "DeveloperUi.h"
 
 extern cppimport UnionCore::TSaveLoadGameInfo UnionCore::SaveLoadGameInfo;
 
@@ -24,6 +25,7 @@ cexport void Game_PreLoop() {
 
 cexport void Game_Loop() {
   RemoteSync::PollUi();
+  DeveloperUi::Poll();
 }
 
 cexport void Game_PostLoop() {

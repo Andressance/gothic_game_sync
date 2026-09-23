@@ -1,4 +1,5 @@
 #include "RemoteSync.h"
+#include "SaveSync.h"
 #include "plugin.h"
 #include "UnionAfx.h"
 
@@ -34,6 +35,7 @@ namespace {
   unsigned int RemoteSaveCount = 0;
   bool RemotePromptShown = false;
   bool RemoteDownloadStarted = false;
+  bool DeveloperPanelOpen = false;
   LONG ServerStatus = 0;
   bool ServerStatusShown = false;
   char ConfiguredServerUrl[1024] = {};
@@ -403,6 +405,67 @@ namespace RemoteSync {
       "Hay %u partidas mas avanzadas en el servidor remoto. Quieres sincronizarlas?",
       CountNewerRemoteSaves() );
     if( Common::Message::Question( message, "GothicSaveSync" ) ) {
+      RemoteDownloadStarted = true;
+      char* serverUrl = new char[strlen(ConfiguredServerUrl) + 1];
+      strcpy_s( serverUrl, strlen(ConfiguredServerUrl) + 1, ConfiguredServerUrl );
+      CloseHandle( CreateThread( 0, 0, DownloadThread, serverUrl, 0, 0 ) );
+    }
+
+    void OpenDeveloperPanel() {
+      if( DeveloperPanelOpen || (GetAsyncKeyState(VK_F10) & 1) == 0 )
+        return;
+      DeveloperPanelOpen = true;
+
+      Common::Message::Box(
+        "VENTANA DE DESARROLLADOR\n\n"
+        "SERVIDOR REMOTO\n"
+        "Las partidas remotas se consultan al iniciar.\n"
+        "Usa la sincronizacion automatica para traer las mas recientes.",
+        "GothicSaveSync - Servidor remoto" );
+
+      if( Common::Message::Question(
+        "Servidor remoto:\n\n"
+        "Pulsa Aceptar para descargar las partidas remotas mas recientes.\n"
+        "Pulsa Cancelar para volver.",
+        "GothicSaveSync - Servidor remoto" ) )
+        DownloadLatest();
+
+      char localMessage[256];
+      _snprintf_s( localMessage, sizeof(localMessage), _TRUNCATE,
+        "PARTIDAS LOCALES Y BACKUPS\n\n"
+        "El backup del slot actual se conserva al restaurar.\n"
+        "Backup disponible: %s.",
+        SaveSync::HasBackup() ? "si" : "no" );
+      Common::Message::Box( localMessage, "GothicSaveSync - Partidas locales" );
+
+      if( Common::Message::Question(
+        "Partida local:\n\n"
+        "Pulsa Aceptar para enviar el ultimo paquete guardado al servidor.\n"
+        "Pulsa Cancelar para no enviarlo.",
+        "GothicSaveSync - Enviar partida" ) &&
+        SaveSync::GetLatestPackagePath()[0] != 0 )
+        UploadSave( SaveSync::GetLatestSaveID(), SaveSync::GetLatestPackagePath() );
+
+      if( Common::Message::Question(
+        "Partidas locales:\n\n"
+        "Pulsa Aceptar para restaurar el backup del slot actual.\n"
+        "Pulsa Cancelar para conservar la partida actual.",
+        "GothicSaveSync - Backups" ) ) {
+        if( !SaveSync::RestoreBackup() )
+          Common::Message::Warning( "No hay backup valido para el slot actual.",
+            "GothicSaveSync" );
+        else
+          Common::Message::Info( "Backup restaurado. Carga de nuevo el slot para aplicarlo.",
+            "GothicSaveSync" );
+      }
+
+      DeveloperPanelOpen = false;
+    }
+
+    void DownloadLatest() {
+      if( ConfiguredServerUrl[0] == 0 || RemoteDownloadStarted )
+        return;
+      ReadRemoteSaves();
       RemoteDownloadStarted = true;
       char* serverUrl = new char[strlen(ConfiguredServerUrl) + 1];
       strcpy_s( serverUrl, strlen(ConfiguredServerUrl) + 1, ConfiguredServerUrl );

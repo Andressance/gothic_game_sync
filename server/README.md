@@ -19,6 +19,7 @@ uvicorn app:app --reload
 3. Seleccionar `Docker` como entorno.
 4. Render detectara este `Dockerfile` automaticamente.
 5. No fijar el puerto manualmente: el contenedor usa la variable `PORT` de Render.
+6. Añadir las variables de Supabase en el panel de Render.
 
 El endpoint de comprobacion sera:
 
@@ -26,9 +27,31 @@ El endpoint de comprobacion sera:
 https://<tu-servicio>.onrender.com/health
 ```
 
-El almacenamiento local de Render puede ser efimero. Para conservar partidas tras reinicios hay que añadir un Persistent Disk o sustituir `server/storage` por almacenamiento de objetos.
+El almacenamiento local de Render puede ser efimero. Para conservar partidas tras reinicios se recomienda usar Supabase Storage.
 
-Por defecto, los paquetes se guardan en `server/storage`. Se puede cambiar la ruta:
+### Configurar Supabase
+
+1. Abre el SQL Editor de tu proyecto Supabase.
+2. Ejecuta [supabase_schema.sql](supabase_schema.sql).
+3. En Render, añade estas variables como secretos del servicio:
+
+```text
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+SUPABASE_STORAGE_BUCKET=gothic-saves
+```
+
+La `service_role` key solo debe existir en Render o en el archivo local
+`server/.env`; nunca debe estar en el `.env` de Gothic ni en el repositorio. El script crea la tabla `save_packages` y el bucket
+privado `gothic-saves`, con un límite de 128 MiB por paquete.
+
+`SUPABASE_URL` debe ser la URL HTTP del proyecto
+(`https://<project-ref>.supabase.co`), no la cadena de conexión PostgreSQL ni
+la contraseña de la base de datos.
+
+Si no se configuran las variables de Supabase, el servidor usa filesystem local
+solo para desarrollo. Por defecto, los paquetes se guardan en `server/storage`.
+Se puede cambiar la ruta:
 
 ```powershell
 $env:GOTHICSAVE_STORAGE = "D:\GothicSaveSyncStorage"
@@ -59,4 +82,4 @@ Ejemplo de descarga:
 curl.exe -o savegame1.gss http://127.0.0.1:8000/saves/savegame1/download
 ```
 
-La API valida el identificador, la extensión y la cabecera `GSSPKG1` del paquete. El límite inicial es de 128 MiB por archivo. `uploaded_at` representa la última modificación remota del slot. Para producción todavía faltan autenticación y almacenamiento de objetos; Render proporciona TLS en el dominio del servicio.
+La API valida el identificador, la extensión y la cabecera `GSSPKG1` del paquete. El límite inicial es de 128 MiB por archivo. `uploaded_at` representa la última modificación remota del slot. Render proporciona TLS en el dominio del servicio.

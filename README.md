@@ -16,6 +16,34 @@ Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada com
 
 Documentacion directa del servidor: [server/README.md](server/README.md)
 
+## Seguridad y deteccion por antivirus
+
+El plugin realiza conexiones salientes mediante la API nativa `WinHTTP`. Solo
+contacta con la URL configurada en `GOTHICSAVE_SERVER_URL`, consulta el estado
+y la lista de partidas, y sube o descarga paquetes `.gss` durante la
+sincronizacion. No abre puertos de escucha ni ejecuta contenido descargado.
+
+Al ser una DLL de mod no firmada digitalmente, algunos antivirus o Windows
+SmartScreen pueden mostrar un aviso o clasificarla como sospechosa. Esto puede
+ser un falso positivo por la combinacion de DLL inyectada, acceso a archivos y
+red; no es una garantia de que cualquier binario distribuido con el nombre del
+proyecto sea seguro. Descarga el plugin de una fuente de confianza y revisa el
+hash del archivo.
+
+Steam normalmente no bloquea un mod de un juego individual por usar WinHTTP,
+pero no se debe usar este plugin en juegos con anti-cheat o en contextos donde
+se prohiban DLLs externas sin comprobar antes sus reglas. GothicSaveSync no
+lee credenciales de Supabase: la clave privilegiada pertenece exclusivamente
+al servidor y nunca debe copiarse al `.env` del juego.
+
+Para reducir riesgos:
+
+- Usa una URL `https://` de un servidor que controles.
+- No configures en el juego una URL desconocida ni compartas paquetes con ella.
+- Mantén una copia local y conserva los backups antes de restaurar.
+- Si el antivirus bloquea la DLL, verifica el binario y su hash antes de crear
+  una excepción; no desactives el antivirus globalmente.
+
 ## Que hace ahora
 
 GothicSaveSync observa el ciclo de guardado y carga del juego:
@@ -72,6 +100,19 @@ Si existen paquetes remotos mas recientes, el juego muestra una pregunta de
 confirmacion. Si se acepta, los paquetes se descargan a `save-sync/pending`.
 Al cargar cada slot, el flujo de restauracion existente conserva el guardado
 local en `save-sync/backup` antes de reemplazarlo.
+
+## Ventana quirurgica de desarrollador
+
+Pulsa `F10` dentro del juego para abrir la interfaz de desarrollador. La
+primera version se presenta como dos paneles de dialogo nativos de Union:
+
+- **Servidor remoto:** descargar manualmente los paquetes remotos mas recientes.
+- **Partidas locales y backups:** restaurar el backup del slot actual sin
+  eliminar el backup conservado.
+
+La interfaz no reemplaza el aviso automatico de sincronizacion. El menu visual
+con listas de slots, nombres y fechas se añadira cuando terminemos el sistema
+de controles del menu para las cuatro variantes de Gothic.
 
 ## Flujo de archivos
 
