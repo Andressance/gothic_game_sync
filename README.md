@@ -12,14 +12,14 @@ Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada com
 - Añadido un servicio web FastAPI para subir, listar, descargar y eliminar paquetes.
 - Añadido soporte Docker preparado para desplegar el servidor en Render.
 - Añadido cliente WinHTTP en segundo plano para consultar y subir partidas.
-- Añadida configuracion `.env` para indicar la URL del servidor.
+- Añadida configuracion nativa de Gothic.ini para indicar la URL del servidor.
 
 Documentacion directa del servidor: [server/README.md](server/README.md)
 
 ## Seguridad y deteccion por antivirus
 
 El plugin realiza conexiones salientes mediante la API nativa `WinHTTP`. Solo
-contacta con la URL configurada en `GOTHICSAVE_SERVER_URL`, consulta el estado
+contacta con la URL configurada en `GOTHICSAVESYNC/ServerURL`, consulta el estado
 y la lista de partidas, y sube o descarga paquetes `.gss` durante la
 sincronizacion. No abre puertos de escucha ni ejecuta contenido descargado.
 
@@ -34,7 +34,7 @@ Steam normalmente no bloquea un mod de un juego individual por usar WinHTTP,
 pero no se debe usar este plugin en juegos con anti-cheat o en contextos donde
 se prohiban DLLs externas sin comprobar antes sus reglas. GothicSaveSync no
 lee credenciales de Supabase: la clave privilegiada pertenece exclusivamente
-al servidor y nunca debe copiarse al `.env` del juego.
+al servidor y nunca debe copiarse a la configuracion de Gothic.
 
 Para reducir riesgos:
 
@@ -80,11 +80,12 @@ flowchart LR
 
 ## Sincronizacion con servidor
 
-El plugin busca un archivo `.env` en la carpeta principal de Gothic, junto al
-ejecutable del juego. Se puede crear copiando [.env.example](.env.example):
+El plugin lee la URL desde la configuracion nativa de Gothic. Añade esta
+seccion a `system\Gothic.ini`:
 
-```env
-GOTHICSAVE_SERVER_URL=https://tu-servicio.onrender.com
+```ini
+[GOTHICSAVESYNC]
+ServerURL=https://tu-servicio.onrender.com
 ```
 
 En una instalación de Steam la estructura debe quedar así:
@@ -92,14 +93,13 @@ En una instalación de Steam la estructura debe quedar así:
 ```text
 Gothic II\
 ├── Gothic2.exe
-├── .env
 └── system\
+    ├── Gothic.ini
     └── Autorun\
         └── GothicSaveSync.dll
 ```
 
-El `.env` no va dentro de `system`; debe estar junto a `Gothic2.exe`. La DLL
-debe corresponder a la variante compilada: `G2 Release` para Gothic II Classic
+La DLL debe corresponder a la variante compilada: `G2 Release` para Gothic II Classic
 o `G2A Release` para Gothic II Gold/NotR. Inicia el juego mediante
 `GothicStarter_mod.exe` cuando uses Union.
 

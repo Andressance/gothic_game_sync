@@ -41,29 +41,16 @@ namespace {
   char ConfiguredServerUrl[1024] = {};
 
   bool ReadServerUrl( char* result, size_t resultSize ) {
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    char path[MAX_PATH];
-    _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\.env",
-      gameDirectory.ToChar() );
-
-    FILE* file = 0;
-    fopen_s( &file, path, "rt" );
-    if( !file )
+    if( !zoptions )
       return false;
 
-    char line[1200];
-    bool found = false;
-    while( fgets( line, sizeof(line), file ) != 0 ) {
-      char value[1024];
-      if( sscanf_s( line, "GOTHICSAVE_SERVER_URL=%1023[^\r\n]", value,
-        (unsigned)_countof(value) ) == 1 ) {
-        strcpy_s( result, resultSize, value );
-        found = true;
-        break;
-      }
-    }
-    fclose( file );
-    return found && result[0] != 0;
+    zSTRING section( "GOTHICSAVESYNC" );
+    zSTRING value = zoptions->ReadString( section, "ServerURL", "" );
+    if( value.IsEmpty() )
+      return false;
+
+    strcpy_s( result, resultSize, value.ToChar() );
+    return result[0] != 0;
   }
 
   bool ParseUrl( const char* value, Url& result ) {
