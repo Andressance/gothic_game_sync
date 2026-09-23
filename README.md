@@ -87,6 +87,22 @@ ejecutable del juego. Se puede crear copiando [.env.example](.env.example):
 GOTHICSAVE_SERVER_URL=https://tu-servicio.onrender.com
 ```
 
+En una instalación de Steam la estructura debe quedar así:
+
+```text
+Gothic II\
+├── Gothic2.exe
+├── .env
+└── system\
+    └── Autorun\
+        └── GothicSaveSync.dll
+```
+
+El `.env` no va dentro de `system`; debe estar junto a `Gothic2.exe`. La DLL
+debe corresponder a la variante compilada: `G2 Release` para Gothic II Classic
+o `G2A Release` para Gothic II Gold/NotR. Inicia el juego mediante
+`GothicStarter_mod.exe` cuando uses Union.
+
 Al arrancar, consulta `GET /saves` en segundo plano y guarda la respuesta
 ordenada por ultima modificacion en `<Gothic>/save-sync/remote.json`. Al
 terminar cada guardado, sube automaticamente el paquete `.gss` del slot a
