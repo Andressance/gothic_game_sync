@@ -319,7 +319,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PreBuildEvent>
-      <Command>$(ProjectDir)\incver.exe $(ProjectDir)</Command>
+      <Command>if exist "$(ProjectDir)\incver.exe" "$(ProjectDir)\incver.exe" "$(ProjectDir)"</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='G2 Release|Win32'">
@@ -387,8 +387,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Plugin\DeveloperUi.h" />
+    <ClInclude Include="Plugin\GameUi.h" />
     <ClInclude Include="Plugin\RemoteSync.h" />
     <ClInclude Include="Plugin\SaveSync.h" />
+    <ClInclude Include="Plugin\SyncLog.h" />
     <ClInclude Include="GothicAPI\Gothic_II_Addon\API\oAiHuman.h" />
     <ClInclude Include="GothicAPI\Gothic_II_Addon\API\oAiShoot.h" />
     <ClInclude Include="GothicAPI\Gothic_II_Addon\API\oAniCtrl.h" />
@@ -1248,6 +1250,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Plugin\DeveloperUi.cpp" />
+    <ClCompile Include="Plugin\GameUi.cpp" />
     <ClCompile Include="Plugin\RemoteSync.cpp" />
     <ClCompile Include="Plugin\SaveSync.cpp" />
     <ClCompile Include="dllmain.cpp" />

@@ -1,5 +1,7 @@
 #include "RemoteSync.h"
 #include "SaveSync.h"
+#include "GameUi.h"
+#include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
 
@@ -34,22 +36,40 @@ namespace {
   RemoteSave RemoteSaves[32] = {};
   unsigned int RemoteSaveCount = 0;
   bool RemotePromptShown = false;
+  bool RemoteSavesChecked = false;
   bool RemoteDownloadStarted = false;
   bool DeveloperPanelOpen = false;
   LONG ServerStatus = 0;
   bool ServerStatusShown = false;
   char ConfiguredServerUrl[1024] = {};
 
+  // State machine for async UI interactions.
+  // PollUi goes through these states instead of blocking with MessageBox.
+  enum UiPhase {
+    UI_IDLE,
+    UI_SERVER_STATUS_SHOWN,     // info/warning overlay on screen
+    UI_SYNC_QUESTION_SHOWN,     // yes/no question about downloading
+    UI_DEV_MENU_SHOWN,          // developer menu overlay
+    UI_DEV_RESULT_INFO          // result feedback after a menu action
+  };
+
+  UiPhase CurrentUiPhase = UI_IDLE;
+
   bool ReadServerUrl( char* result, size_t resultSize ) {
-    if( !zoptions )
+    if( !zoptions ) {
+      SyncLog::Write( "ReadServerUrl: zoptions is null" );
       return false;
+    }
 
     zSTRING section( "GOTHICSAVESYNC" );
     zSTRING value = zoptions->ReadString( section, "ServerURL", "" );
-    if( value.IsEmpty() )
+    if( value.IsEmpty() ) {
+      SyncLog::Write( "ReadServerUrl: no ServerURL in Gothic.ini [GOTHICSAVESYNC]" );
       return false;
+    }
 
     strcpy_s( result, resultSize, value.ToChar() );
+    SyncLog::Write( "ReadServerUrl: '%s'", result );
     return result[0] != 0;
   }
 
@@ -135,13 +155,17 @@ namespace {
     char path[MAX_PATH];
     _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\save-sync\\remote.json",
       gameDirectory.ToChar() );
+    SyncLog::Write( "ReadRemoteSaves: reading '%s'", path );
     FILE* file = 0;
     fopen_s( &file, path, "rt" );
-    if( !file )
+    if( !file ) {
+      SyncLog::Write( "ReadRemoteSaves: file not found" );
       return 0;
+    }
     fseek( file, 0, SEEK_END );
     long length = ftell( file );
     fseek( file, 0, SEEK_SET );
+    SyncLog::Write( "ReadRemoteSaves: file length = %ld", length );
     if( length <= 0 || length > (long)MaxResponseSize ) {
       fclose( file );
       return 0;
@@ -168,10 +192,14 @@ namespace {
       memcpy( RemoteSaves[RemoteSaveCount].saveID, id, idLength );
       RemoteSaves[RemoteSaveCount].saveID[idLength] = 0;
       RemoteSaves[RemoteSaveCount].uploadedAt = _atoi64( timestamp + 20 );
+      SyncLog::Write( "ReadRemoteSaves: [%u] id='%s' epoch=%lld",
+        RemoteSaveCount, RemoteSaves[RemoteSaveCount].saveID,
+        RemoteSaves[RemoteSaveCount].uploadedAt );
       ++RemoteSaveCount;
       cursor = end + 1;
     }
     delete[] json;
+    SyncLog::Write( "ReadRemoteSaves: found %u remote save(s)", RemoteSaveCount );
     return RemoteSaveCount;
   }
 
@@ -238,22 +266,28 @@ namespace {
   }
 
   void FetchRemoteSaves( const char* serverUrl ) {
+    SyncLog::Write( "FetchRemoteSaves: starting" );
     Url url;
-    if( !ParseUrl( serverUrl, url ) )
+    if( !ParseUrl( serverUrl, url ) ) {
+      SyncLog::Write( "FetchRemoteSaves: ParseUrl failed" );
       return;
+    }
 
     wchar_t path[1024];
     _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/saves", url.path );
     wcscpy_s( url.path, path );
     HINTERNET session = 0;
     HINTERNET request = OpenRequest( url, L"GET", session );
-    if( !request )
+    if( !request ) {
+      SyncLog::Write( "FetchRemoteSaves: OpenRequest failed (err=%u)", GetLastError() );
       return;
+    }
 
     const wchar_t* headers = L"Accept: application/json\r\n";
     bool sent = WinHttpSendRequest( request, headers, (DWORD)-1L,
       WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
       WinHttpReceiveResponse( request, 0 );
+    SyncLog::Write( "FetchRemoteSaves: request sent=%d", sent ? 1 : 0 );
     if( sent ) {
       Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
       char directory[MAX_PATH];
@@ -262,24 +296,30 @@ namespace {
       CreateDirectoryA( directory, 0 );
       char output[MAX_PATH];
       _snprintf_s( output, sizeof(output), _TRUNCATE, "%s\\remote.json", directory );
-      ReadResponse( request, output );
+      bool ok = ReadResponse( request, output );
+      SyncLog::Write( "FetchRemoteSaves: saved to '%s' (ok=%d)", output, ok ? 1 : 0 );
     }
     WinHttpCloseHandle( request );
     WinHttpCloseHandle( session );
   }
 
   bool CheckServerStatus( const char* serverUrl ) {
+      SyncLog::Write( "CheckServerStatus: '%s'", serverUrl );
       Url url;
-      if( !ParseUrl( serverUrl, url ) )
+      if( !ParseUrl( serverUrl, url ) ) {
+        SyncLog::Write( "CheckServerStatus: ParseUrl failed" );
         return false;
+      }
 
       wchar_t path[1024];
       _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/status", url.path );
       wcscpy_s( url.path, path );
       HINTERNET session = 0;
       HINTERNET request = OpenRequest( url, L"GET", session );
-      if( !request )
+      if( !request ) {
+        SyncLog::Write( "CheckServerStatus: OpenRequest failed (err=%u)", GetLastError() );
         return false;
+      }
 
       bool result = WinHttpSendRequest( request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
         WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
@@ -291,6 +331,9 @@ namespace {
           WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
           WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize,
           WINHTTP_NO_HEADER_INDEX ) && statusCode == 200;
+        SyncLog::Write( "CheckServerStatus: HTTP %u -> %s", statusCode, result ? "OK" : "FAIL" );
+      } else {
+        SyncLog::Write( "CheckServerStatus: request failed (err=%u)", GetLastError() );
       }
       WinHttpCloseHandle( request );
       WinHttpCloseHandle( session );
@@ -298,71 +341,132 @@ namespace {
     }
   DWORD WINAPI StartupThread( void* argument ) {
     char* serverUrl = (char*)argument;
-    InterlockedExchange( &ServerStatus, CheckServerStatus( serverUrl ) ? 1 : -1 );
-    FetchRemoteSaves( serverUrl );
+    SyncLog::Write( "StartupThread: begin" );
+    bool online = CheckServerStatus( serverUrl );
+    InterlockedExchange( &ServerStatus, online ? 1 : -1 );
+    SyncLog::Write( "StartupThread: server %s", online ? "ONLINE" : "OFFLINE" );
+    if( online )
+      FetchRemoteSaves( serverUrl );
+    else
+      SyncLog::Write( "StartupThread: skipping FetchRemoteSaves (server offline)" );
     delete[] serverUrl;
+    SyncLog::Write( "StartupThread: done" );
     return 0;
   }
 
   DWORD WINAPI UploadThread( void* argument ) {
     UploadJob* job = (UploadJob*)argument;
+    SyncLog::Write( "UploadThread: id='%s' path='%s' server='%s'",
+      job->saveID, job->packagePath, job->serverUrl );
     Url url;
-    if( ParseUrl( job->serverUrl, url ) ) {
-      wchar_t path[1024];
-      wchar_t saveID[128];
-      MultiByteToWideChar( CP_UTF8, 0, job->saveID, -1, saveID, _countof(saveID) );
-      _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/saves/%s", url.path, saveID );
-      wcscpy_s( url.path, path );
+    if( !ParseUrl( job->serverUrl, url ) ) {
+      SyncLog::Write( "UploadThread: ParseUrl failed" );
+      delete job;
+      return 0;
+    }
+    wchar_t path[1024];
+    wchar_t saveID[128];
+    MultiByteToWideChar( CP_UTF8, 0, job->saveID, -1, saveID, _countof(saveID) );
+    _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/saves/%s", url.path, saveID );
+    wcscpy_s( url.path, path );
 
-      FILE* package = 0;
-      fopen_s( &package, job->packagePath, "rb" );
-      if( package ) {
-        fseek( package, 0, SEEK_END );
-        long length = ftell( package );
-        fseek( package, 0, SEEK_SET );
-        if( length > 0 ) {
-          const char* boundary = "----GothicSaveSyncBoundary";
-          char prefix[512];
-          _snprintf_s( prefix, sizeof(prefix), _TRUNCATE,
-            "--%s\r\nContent-Disposition: form-data; name=\"save\"; filename=\"%s.gss\"\r\n"
-            "Content-Type: application/octet-stream\r\n\r\n", boundary, job->saveID );
-          const char* suffix = "\r\n------GothicSaveSyncBoundary--\r\n";
-          size_t prefixLength = strlen(prefix);
-          size_t suffixLength = strlen(suffix);
-          size_t bodyLength = prefixLength + (size_t)length + suffixLength;
-          char* body = new char[bodyLength];
-          memcpy( body, prefix, prefixLength );
-          if( fread( body + prefixLength, 1, (size_t)length, package ) == (size_t)length ) {
-            memcpy( body + prefixLength + (size_t)length, suffix, suffixLength );
-            HINTERNET session = 0;
-            HINTERNET request = OpenRequest( url, L"POST", session );
-            if( request ) {
-              wchar_t headers[256];
-              _snwprintf_s( headers, _countof(headers), _TRUNCATE,
-                L"Content-Type: multipart/form-data; boundary=%S\r\n", boundary );
-              WinHttpSendRequest( request, headers, (DWORD)-1L, body,
-                (DWORD)bodyLength, (DWORD)bodyLength, 0 );
-              WinHttpReceiveResponse( request, 0 );
-              WinHttpCloseHandle( request );
-              WinHttpCloseHandle( session );
-            }
-          }
-          delete[] body;
-        }
-        fclose( package );
+    FILE* package = 0;
+    fopen_s( &package, job->packagePath, "rb" );
+    if( !package ) {
+      SyncLog::Write( "UploadThread: cannot open package file '%s'", job->packagePath );
+      delete job;
+      return 0;
+    }
+    fseek( package, 0, SEEK_END );
+    long length = ftell( package );
+    fseek( package, 0, SEEK_SET );
+    SyncLog::Write( "UploadThread: package size = %ld bytes", length );
+    if( length <= 0 ) {
+      SyncLog::Write( "UploadThread: empty package, aborting" );
+      fclose( package );
+      delete job;
+      return 0;
+    }
+
+    const char* boundary = "----GothicSaveSyncBoundary";
+    char prefix[512];
+    _snprintf_s( prefix, sizeof(prefix), _TRUNCATE,
+      "--%s\r\nContent-Disposition: form-data; name=\"save\"; filename=\"%s.gss\"\r\n"
+      "Content-Type: application/octet-stream\r\n\r\n", boundary, job->saveID );
+    const char* suffix = "\r\n------GothicSaveSyncBoundary--\r\n";
+    size_t prefixLength = strlen(prefix);
+    size_t suffixLength = strlen(suffix);
+    size_t bodyLength = prefixLength + (size_t)length + suffixLength;
+
+    HINTERNET session = 0;
+    HINTERNET request = OpenRequest( url, L"POST", session );
+    if( !request ) {
+      SyncLog::Write( "UploadThread: OpenRequest failed (err=%u)", GetLastError() );
+      fclose( package );
+      delete job;
+      return 0;
+    }
+    wchar_t headers[256];
+    _snwprintf_s( headers, _countof(headers), _TRUNCATE,
+      L"Content-Type: multipart/form-data; boundary=%S\r\n", boundary );
+      
+    bool sent = WinHttpSendRequest( request, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA,
+      0, (DWORD)bodyLength, 0 ) != 0;
+      
+    if( sent ) {
+      DWORD bytesWritten = 0;
+      sent = WinHttpWriteData( request, prefix, (DWORD)prefixLength, &bytesWritten ) != 0;
+    }
+
+    if( sent ) {
+      char buffer[8192];
+      size_t readBytes = 0;
+      while( sent && (readBytes = fread( buffer, 1, sizeof(buffer), package )) > 0 ) {
+        DWORD bytesWritten = 0;
+        sent = WinHttpWriteData( request, buffer, (DWORD)readBytes, &bytesWritten ) != 0;
       }
     }
+    
+    fclose( package );
+
+    if( sent ) {
+      DWORD bytesWritten = 0;
+      sent = WinHttpWriteData( request, suffix, (DWORD)suffixLength, &bytesWritten ) != 0;
+    }
+
+    if( sent )
+      sent = WinHttpReceiveResponse( request, 0 ) != 0;
+
+    if( sent ) {
+      DWORD statusCode = 0;
+      DWORD size = sizeof(statusCode);
+      WinHttpQueryHeaders( request,
+        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size,
+        WINHTTP_NO_HEADER_INDEX );
+      SyncLog::Write( "UploadThread: server responded HTTP %u", statusCode );
+    } else {
+      SyncLog::Write( "UploadThread: send/receive failed (err=%u)", GetLastError() );
+    }
+
+    WinHttpCloseHandle( request );
+    WinHttpCloseHandle( session );
     delete job;
+    SyncLog::Write( "UploadThread: done" );
     return 0;
   }
 }
 
 namespace RemoteSync {
   void Start() {
+    SyncLog::Write( "RemoteSync::Start()" );
     char serverUrl[1024] = {};
-    if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) )
+    if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) ) {
+      SyncLog::Write( "RemoteSync::Start: no server URL, sync disabled" );
       return;
+    }
     strcpy_s( ConfiguredServerUrl, serverUrl );
+    SyncLog::Write( "RemoteSync::Start: launching startup thread for '%s'", serverUrl );
     char* argument = new char[strlen(serverUrl) + 1];
     strcpy_s( argument, strlen(serverUrl) + 1, serverUrl );
     CloseHandle( CreateThread( 0, 0, StartupThread, argument, 0, 0 ) );
@@ -371,83 +475,129 @@ namespace RemoteSync {
   void PollUi() {
     if( ConfiguredServerUrl[0] == 0 )
       return;
-    LONG status = InterlockedCompareExchange( &ServerStatus, 0, 0 );
-    if( status != 0 && !ServerStatusShown ) {
-      ServerStatusShown = true;
-      if( status > 0 )
-        Common::Message::Info( "Servidor remoto disponible. GothicSaveSync puede sincronizar partidas.",
-          "GothicSaveSync" );
-      else
-        Common::Message::Warning( "No se puede conectar con el servidor remoto. Las partidas locales siguen disponibles.",
-          "GothicSaveSync" );
-    }
-    if( RemotePromptShown || RemoteDownloadStarted || status <= 0 )
-      return;
-    if( ReadRemoteSaves() == 0 || !HasNewerRemoteSave() )
+
+    // If any overlay is still active, let GameUi handle it; don't advance.
+    if( GameUi::IsActive() )
       return;
 
-    RemotePromptShown = true;
-    char message[256];
-    _snprintf_s( message, sizeof(message), _TRUNCATE,
-      "Hay %u partidas mas avanzadas en el servidor remoto. Quieres sincronizarlas?",
-      CountNewerRemoteSaves() );
-    if( Common::Message::Question( message, "GothicSaveSync" ) ) {
-      RemoteDownloadStarted = true;
-      char* serverUrl = new char[strlen(ConfiguredServerUrl) + 1];
-      strcpy_s( serverUrl, strlen(ConfiguredServerUrl) + 1, ConfiguredServerUrl );
-      CloseHandle( CreateThread( 0, 0, DownloadThread, serverUrl, 0, 0 ) );
+    // --- State machine for non-blocking UI flow ---
+    switch( CurrentUiPhase ) {
+
+      // Nothing pending — check for new events.
+      case UI_IDLE: {
+        LONG status = InterlockedCompareExchange( &ServerStatus, 0, 0 );
+
+        // Step 1: show server status once.
+        if( status != 0 && !ServerStatusShown ) {
+          ServerStatusShown = true;
+          if( status > 0 )
+            GameUi::ShowInfo( "GothicSaveSync",
+              "Servidor remoto disponible.\nGothicSaveSync puede sincronizar partidas." );
+          else
+            GameUi::ShowWarning( "GothicSaveSync",
+              "No se puede conectar con el servidor remoto.\nLas partidas locales siguen disponibles." );
+          CurrentUiPhase = UI_SERVER_STATUS_SHOWN;
+          return;
+        }
+
+        // Step 2: check for newer remote saves.
+        if( !RemoteSavesChecked && !RemotePromptShown && !RemoteDownloadStarted && status > 0 ) {
+          RemoteSavesChecked = true;
+          if( ReadRemoteSaves() > 0 && HasNewerRemoteSave() ) {
+            RemotePromptShown = true;
+            char message[256];
+            _snprintf_s( message, sizeof(message), _TRUNCATE,
+              "Hay %u partidas mas avanzadas\nen el servidor remoto.\nQuieres sincronizarlas?",
+              CountNewerRemoteSaves() );
+            GameUi::ShowQuestion( "GothicSaveSync", message );
+            CurrentUiPhase = UI_SYNC_QUESTION_SHOWN;
+            return;
+          }
+        }
+        break;
+      }
+
+      // Server status overlay was dismissed — go back to idle for next check.
+      case UI_SERVER_STATUS_SHOWN: {
+        CurrentUiPhase = UI_IDLE;
+        break;
+      }
+
+      // Sync question was answered.
+      case UI_SYNC_QUESTION_SHOWN: {
+        GameUi::QuestionResult result = GameUi::GetQuestionResult();
+        if( result == GameUi::QUESTION_YES ) {
+          RemoteDownloadStarted = true;
+          char* serverUrl = new char[strlen(ConfiguredServerUrl) + 1];
+          strcpy_s( serverUrl, strlen(ConfiguredServerUrl) + 1, ConfiguredServerUrl );
+          CloseHandle( CreateThread( 0, 0, DownloadThread, serverUrl, 0, 0 ) );
+          GameUi::ShowInfo( "GothicSaveSync",
+            "Descargando partidas remotas..." );
+        }
+        CurrentUiPhase = UI_IDLE;
+        break;
+      }
+
+      // Developer menu was closed — handle the chosen action.
+      case UI_DEV_MENU_SHOWN: {
+        int choice = GameUi::GetMenuResult();
+        switch( choice ) {
+          case GameUi::MENUITEM_DOWNLOAD_REMOTE:
+            DownloadLatest();
+            GameUi::ShowInfo( "GothicSaveSync",
+              "Descargando partidas remotas mas recientes..." );
+            CurrentUiPhase = UI_DEV_RESULT_INFO;
+            break;
+
+          case GameUi::MENUITEM_UPLOAD_SAVE:
+            if( SaveSync::GetLatestPackagePath()[0] != 0 ) {
+              UploadSave( SaveSync::GetLatestSaveID(), SaveSync::GetLatestPackagePath() );
+              GameUi::ShowInfo( "GothicSaveSync",
+                "Enviando ultimo guardado al servidor..." );
+            } else {
+              GameUi::ShowWarning( "GothicSaveSync",
+                "No hay ningun paquete guardado para enviar." );
+            }
+            CurrentUiPhase = UI_DEV_RESULT_INFO;
+            break;
+
+          case GameUi::MENUITEM_RESTORE_BACKUP:
+            if( !SaveSync::RestoreBackup() ) {
+              GameUi::ShowWarning( "GothicSaveSync",
+                "No hay backup valido para el slot actual." );
+            } else {
+              GameUi::ShowInfo( "GothicSaveSync",
+                "Backup restaurado.\nCarga de nuevo el slot para aplicarlo." );
+            }
+            CurrentUiPhase = UI_DEV_RESULT_INFO;
+            break;
+
+          default: // MENUITEM_CLOSE or escape
+            DeveloperPanelOpen = false;
+            CurrentUiPhase = UI_IDLE;
+            break;
+        }
+        break;
+      }
+
+      // Result info after a developer action was dismissed.
+      case UI_DEV_RESULT_INFO: {
+        DeveloperPanelOpen = false;
+        CurrentUiPhase = UI_IDLE;
+        break;
+      }
     }
   }
 
     void OpenDeveloperPanel() {
-      if( DeveloperPanelOpen || (GetAsyncKeyState(VK_F10) & 1) == 0 )
+      if( DeveloperPanelOpen || GameUi::IsActive() )
         return;
+      if( (GetAsyncKeyState(VK_F10) & 1) == 0 )
+        return;
+
       DeveloperPanelOpen = true;
-
-      Common::Message::Box(
-        "VENTANA DE DESARROLLADOR\n\n"
-        "SERVIDOR REMOTO\n"
-        "Las partidas remotas se consultan al iniciar.\n"
-        "Usa la sincronizacion automatica para traer las mas recientes.",
-        "GothicSaveSync - Servidor remoto" );
-
-      if( Common::Message::Question(
-        "Servidor remoto:\n\n"
-        "Pulsa Aceptar para descargar las partidas remotas mas recientes.\n"
-        "Pulsa Cancelar para volver.",
-        "GothicSaveSync - Servidor remoto" ) )
-        DownloadLatest();
-
-      char localMessage[256];
-      _snprintf_s( localMessage, sizeof(localMessage), _TRUNCATE,
-        "PARTIDAS LOCALES Y BACKUPS\n\n"
-        "El backup del slot actual se conserva al restaurar.\n"
-        "Backup disponible: %s.",
-        SaveSync::HasBackup() ? "si" : "no" );
-      Common::Message::Box( localMessage, "GothicSaveSync - Partidas locales" );
-
-      if( Common::Message::Question(
-        "Partida local:\n\n"
-        "Pulsa Aceptar para enviar el ultimo paquete guardado al servidor.\n"
-        "Pulsa Cancelar para no enviarlo.",
-        "GothicSaveSync - Enviar partida" ) &&
-        SaveSync::GetLatestPackagePath()[0] != 0 )
-        UploadSave( SaveSync::GetLatestSaveID(), SaveSync::GetLatestPackagePath() );
-
-      if( Common::Message::Question(
-        "Partidas locales:\n\n"
-        "Pulsa Aceptar para restaurar el backup del slot actual.\n"
-        "Pulsa Cancelar para conservar la partida actual.",
-        "GothicSaveSync - Backups" ) ) {
-        if( !SaveSync::RestoreBackup() )
-          Common::Message::Warning( "No hay backup valido para el slot actual.",
-            "GothicSaveSync" );
-        else
-          Common::Message::Info( "Backup restaurado. Carga de nuevo el slot para aplicarlo.",
-            "GothicSaveSync" );
-      }
-
-      DeveloperPanelOpen = false;
+      GameUi::ShowDeveloperMenu();
+      CurrentUiPhase = UI_DEV_MENU_SHOWN;
     }
 
     void DownloadLatest() {
@@ -461,13 +611,17 @@ namespace RemoteSync {
     }
 
   void UploadSave( const char* saveID, const char* packagePath ) {
+    SyncLog::Write( "UploadSave: id='%s' path='%s'", saveID, packagePath );
     char serverUrl[1024] = {};
-    if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) )
+    if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) ) {
+      SyncLog::Write( "UploadSave: no server URL" );
       return;
+    }
     UploadJob* job = new UploadJob();
     strcpy_s( job->saveID, saveID );
     strcpy_s( job->packagePath, packagePath );
     strcpy_s( job->serverUrl, serverUrl );
+    SyncLog::Write( "UploadSave: launching upload thread" );
     CloseHandle( CreateThread( 0, 0, UploadThread, job, 0, 0 ) );
   }
 }

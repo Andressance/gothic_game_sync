@@ -1,4 +1,5 @@
 #include "SaveSync.h"
+#include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
 
@@ -374,9 +375,13 @@ namespace {
 namespace SaveSync {
   void OnSaveEnd() {
     int slotID = UnionCore::SaveLoadGameInfo.slotID;
-    if( slotID < 0 )
+    SyncLog::Write( "SaveSync::OnSaveEnd: slotID=%d", slotID );
+    if( slotID < 0 ) {
+      SyncLog::Write( "SaveSync::OnSaveEnd: invalid slotID, abort" );
       return;
+    }
 
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
     const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     char source[MAX_PATH];
     char syncDirectory[MAX_PATH];
@@ -385,18 +390,31 @@ namespace SaveSync {
     char stagingDirectory[MAX_PATH];
     char stagingPackage[MAX_PATH];
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveDirectory,
-      slotName );
-    _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s\\save-sync", saveDirectory );
+    
+    // Ensure we have an absolute path. zoptions may return "\SAVES\" which is relative to game root.
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
+    } else {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
+    }
+    
     _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\pending", syncDirectory );
     _snprintf_s( target, sizeof(target), _TRUNCATE, "%s\\%s.gss", root, slotName );
     _snprintf_s( stagingDirectory, sizeof(stagingDirectory), _TRUNCATE, "%s.tmpdir", target );
     _snprintf_s( stagingPackage, sizeof(stagingPackage), _TRUNCATE, "%s.tmp", target );
 
+    SyncLog::Write( "SaveSync::OnSaveEnd: source='%s'", source );
+    SyncLog::Write( "SaveSync::OnSaveEnd: target='%s'", target );
+
     DWORD sourceAttributes = GetFileAttributesA( source );
     if( sourceAttributes == INVALID_FILE_ATTRIBUTES ||
-        (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 )
+        (sourceAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ) {
+      SyncLog::Write( "SaveSync::OnSaveEnd: source dir missing or not a dir (attr=0x%08X)",
+        sourceAttributes );
       return;
+    }
 
     if( !EnsureDirectory( syncDirectory ) || !EnsureDirectory( root ) )
       return;
@@ -420,6 +438,9 @@ namespace SaveSync {
     if( MoveFileA( stagingPackage, target ) != 0 ) {
       strcpy_s( LatestPackagePath, target );
       strcpy_s( LatestSaveID, slotName );
+      SyncLog::Write( "SaveSync::OnSaveEnd: package created at '%s'", target );
+    } else {
+      SyncLog::Write( "SaveSync::OnSaveEnd: MoveFile failed (err=%u)", GetLastError() );
     }
   }
 
@@ -428,6 +449,7 @@ namespace SaveSync {
     if( slotID < 0 )
       return;
 
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
     const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     char source[MAX_PATH];
     char root[MAX_PATH];
@@ -436,8 +458,13 @@ namespace SaveSync {
     char backupRoot[MAX_PATH];
     char backup[MAX_PATH];
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveDirectory, slotName );
-    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveDirectory );
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
+    } else {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
+    }
     _snprintf_s( pending, sizeof(pending), _TRUNCATE, "%s\\pending\\%s.gss", root, slotName );
     _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s\\pending\\%s.unpack", root, slotName );
     _snprintf_s( backupRoot, sizeof(backupRoot), _TRUNCATE, "%s\\backup", root );

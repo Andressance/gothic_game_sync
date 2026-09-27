@@ -3,6 +3,8 @@
 #include "SaveSync.h"
 #include "RemoteSync.h"
 #include "DeveloperUi.h"
+#include "GameUi.h"
+#include "SyncLog.h"
 
 #include <windows.h>
 #include <stdio.h>
@@ -67,11 +69,12 @@ cexport void Game_Entry() {
 cexport void Game_Init() {
   DebugLogHook( "Game_Init reached" );
   DebugLog( "Game_Init reached" );
-  Message::Info( "Hello, GothicSaveSync!", "GothicSaveSync" );
+  GameUi::Init();
   RemoteSync::Start();
 }
 
 cexport void Game_Exit() {
+  GameUi::Shutdown();
 }
 
 cexport void Game_PreLoop() {
@@ -79,6 +82,7 @@ cexport void Game_PreLoop() {
 
 cexport void Game_Loop() {
   DebugLogHook( "Game_Loop reached" );
+  GameUi::Poll();
   RemoteSync::PollUi();
   DeveloperUi::Poll();
 }
@@ -87,6 +91,7 @@ cexport void Game_PostLoop() {
 }
 
 cexport void Game_MenuLoop() {
+  GameUi::Poll();
 }
 
 cexport void Game_SaveBegin() {
@@ -96,9 +101,15 @@ cexport void Game_SaveEnd() {
   DebugLogHook( "Game_SaveEnd reached" );
   DebugLog( "Game_SaveEnd reached" );
   SaveSync::OnSaveEnd();
-  if( SaveSync::GetLatestPackagePath()[0] != 0 )
-    RemoteSync::UploadSave( SaveSync::GetLatestSaveID(),
-      SaveSync::GetLatestPackagePath() );
+  const char* pkg = SaveSync::GetLatestPackagePath();
+  const char* id  = SaveSync::GetLatestSaveID();
+  SyncLog::Write( "Game_SaveEnd: latestID='%s' latestPath='%s'", id, pkg );
+  if( pkg[0] != 0 ) {
+    SyncLog::Write( "Game_SaveEnd: triggering UploadSave" );
+    RemoteSync::UploadSave( id, pkg );
+  } else {
+    SyncLog::Write( "Game_SaveEnd: no package to upload" );
+  }
 }
 
 void LoadBegin() {
