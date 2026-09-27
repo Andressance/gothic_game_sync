@@ -100,17 +100,27 @@ cexport void Game_SaveBegin() {
 cexport void Game_SaveEnd() {
   DebugLogHook( "Game_SaveEnd reached" );
   DebugLog( "Game_SaveEnd reached" );
-  SaveSync::OnSaveEnd();
+}
+
+void __fastcall Hook_SetAndWriteSavegame( oCSavegameManager* _this, void* vtable, int slotNr, oCSavegameInfo* info );
+Hook Ivk_SetAndWriteSavegame = CreateHook( (void*)0x004390E0, &Hook_SetAndWriteSavegame, Hook_Detours );
+void __fastcall Hook_SetAndWriteSavegame( oCSavegameManager* _this, void* vtable, int slotNr, oCSavegameInfo* info ) {
+  Ivk_SetAndWriteSavegame( _this, vtable, slotNr, info );
+  
+  // Now the save is fully written to disk, so we can pack and upload it.
+  SyncLog::Write( "Hook_SetAndWriteSavegame: finished writing slot %d", slotNr );
+  SaveSync::OnSaveEnd( slotNr );
   const char* pkg = SaveSync::GetLatestPackagePath();
   const char* id  = SaveSync::GetLatestSaveID();
-  SyncLog::Write( "Game_SaveEnd: latestID='%s' latestPath='%s'", id, pkg );
+  SyncLog::Write( "Hook_SetAndWriteSavegame: latestID='%s' latestPath='%s'", id, pkg );
   if( pkg[0] != 0 ) {
-    SyncLog::Write( "Game_SaveEnd: triggering UploadSave" );
+    SyncLog::Write( "Hook_SetAndWriteSavegame: triggering UploadSave" );
     RemoteSync::UploadSave( id, pkg );
   } else {
-    SyncLog::Write( "Game_SaveEnd: no package to upload" );
+    SyncLog::Write( "Hook_SetAndWriteSavegame: no package to upload" );
   }
 }
+
 
 void LoadBegin() {
 }

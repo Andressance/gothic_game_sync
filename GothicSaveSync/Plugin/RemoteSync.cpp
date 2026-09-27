@@ -14,6 +14,7 @@
 
 namespace {
   const unsigned int MaxResponseSize = 1024 * 1024;
+  const unsigned int MaxPackageSize = 128 * 1024 * 1024;
 
   struct Url {
     wchar_t host[256];
@@ -38,6 +39,7 @@ namespace {
   bool RemotePromptShown = false;
   bool RemoteSavesChecked = false;
   bool RemoteDownloadStarted = false;
+  bool NeedsSavegameRefresh = false;
   bool DeveloperPanelOpen = false;
   LONG ServerStatus = 0;
   bool ServerStatusShown = false;
@@ -124,7 +126,7 @@ namespace {
     unsigned int total = 0;
     bool result = true;
     while( WinHttpReadData( request, buffer, sizeof(buffer), &read ) && read > 0 ) {
-      if( total + read > MaxResponseSize ||
+      if( total + read > MaxPackageSize ||
           fwrite( buffer, 1, read, output ) != read ) {
         result = false;
         break;
@@ -137,10 +139,16 @@ namespace {
   }
 
   __int64 LocalPackageTime( const char* saveID ) {
-    auto saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES );
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     char path[MAX_PATH];
-    _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\save-sync\\pending\\%s.gss",
-      saveDirectory.ToChar(), saveID );
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( path, sizeof(path), _TRUNCATE, "%s%ssave-sync\\pending\\%s.gss",
+        gameDirectory.ToChar(), saveDirectory, saveID );
+    } else {
+      _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s\\save-sync\\pending\\%s.gss",
+        gameDirectory.ToChar(), saveDirectory, saveID );
+    }
     WIN32_FILE_ATTRIBUTE_DATA data;
     if( !GetFileAttributesExA( path, GetFileExInfoStandard, &data ) )
       return 0;
@@ -236,21 +244,49 @@ namespace {
       WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
       WinHttpReceiveResponse( request, 0 );
     if( sent ) {
-      auto saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES );
+      Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+      const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
       char directory[MAX_PATH];
       char target[MAX_PATH];
-      _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s\\save-sync\\pending",
-        saveDirectory.ToChar() );
+      if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+        _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s%ssave-sync\\pending",
+          gameDirectory.ToChar(), saveDirectory );
+      } else {
+        _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s\\%s\\save-sync\\pending",
+          gameDirectory.ToChar(), saveDirectory );
+      }
       CreateDirectoryA( directory, 0 );
       _snprintf_s( target, sizeof(target), _TRUNCATE, "%s\\%s.gss",
         directory, save.saveID );
       char temporary[MAX_PATH];
       _snprintf_s( temporary, sizeof(temporary), _TRUNCATE, "%s.download",
         target );
-      if( ReadResponse( request, temporary ) )
+      if( ReadResponse( request, temporary ) ) {
         MoveFileExA( temporary, target, MOVEFILE_REPLACE_EXISTING );
-      else
+        SyncLog::Write( "DownloadSave: downloaded to '%s'", target );
+        
+        int slotID = -1;
+        for( int candidate = 0; candidate < 100; ++candidate ) {
+          const char* name = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( candidate ).ToChar();
+          if( strcmp( name, save.saveID ) == 0 ) {
+            slotID = candidate;
+            break;
+          }
+        }
+        
+        SyncLog::Write( "DownloadSave: saveID='%s' resolved slotID=%d", save.saveID, slotID );
+        if( slotID >= 0 ) {
+          bool installed = SaveSync::InstallPendingPackage( save.saveID, slotID );
+          SyncLog::Write( "DownloadSave: InstallPendingPackage -> %d", installed );
+          if( installed )
+            NeedsSavegameRefresh = true;
+        } else {
+          SyncLog::Write( "DownloadSave: could not resolve slotID for '%s'", save.saveID );
+        }
+      } else {
+        SyncLog::Write( "DownloadSave: ReadResponse failed for '%s'", temporary );
         DeleteFileA( temporary );
+      }
     }
     WinHttpCloseHandle( request );
     WinHttpCloseHandle( session );
@@ -475,6 +511,14 @@ namespace RemoteSync {
   void PollUi() {
     if( ConfiguredServerUrl[0] == 0 )
       return;
+
+    if( NeedsSavegameRefresh ) {
+      NeedsSavegameRefresh = false;
+      if( gameMan && gameMan->savegameManager ) {
+        gameMan->savegameManager->Reinit();
+        SyncLog::Write( "PollUi: Savegame manager reinitialized" );
+      }
+    }
 
     // If any overlay is still active, let GameUi handle it; don't advance.
     if( GameUi::IsActive() )

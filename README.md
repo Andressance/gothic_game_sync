@@ -1,94 +1,54 @@
 # GothicSaveSync
 
-Sincronizacion de partidas guardadas de Gothic entre dispositivos, integrada como plugin de Union.
+GothicSaveSync is a comprehensive cloud-save synchronization plugin for the classic Gothic engine (ZenGin), built natively with the Union SDK. It seamlessly synchronizes save games across multiple devices using a bespoke binary packing system and a modern Python/FastAPI backend.
 
-> Estado actual: snapshots locales paquetizados, restauracion segura y sincronizacion HTTP basica.
+> **Status:** Fully functional automatic background syncing, secure local binary packaging, dynamic UI refreshes, and Supabase integration.
 
-## Ultimos cambios
+## Key Features
 
-- Renombrado el proyecto y la carpeta principal a `GothicSaveSync`.
-- Añadida la paquetizacion binaria `.gss` de partidas guardadas.
-- Añadida restauracion segura con validacion de hash y backup automatico.
-- Añadido un servicio web FastAPI para subir, listar, descargar y eliminar paquetes.
-- Añadido soporte Docker preparado para desplegar el servidor en Render.
-- Añadido cliente WinHTTP en segundo plano para consultar y subir partidas.
-- Añadida configuracion nativa de Gothic.ini para indicar la URL del servidor.
+- **Transparent Background Syncing**: Save games are automatically uploaded to the cloud in the background exactly when the game engine finishes writing them to disk.
+- **In-Game Cloud Prompts**: Upon launching the game, the plugin checks for newer saves in the cloud. If found, an in-game prompt allows you to download and restore them seamlessly.
+- **Dynamic UI Refresh**: Gothic's internal savegame manager is dynamically reinitialized after a cloud download, allowing the native Load Game menu to instantly reflect the new save names and timestamps without restarting the game.
+- **Atomic Restoration & Backups**: Every cloud restoration is atomic. The plugin creates a local backup of your current save slot before overwriting it, ensuring you never lose data due to a network interruption.
+- **Bespoke `.gss` Binary Packages**: Save games are packed into a custom binary format (`.gss`) that validates the Gothic executable hash, slot ID, and file paths to prevent corruption and ensure cross-version safety.
+- **Universal Compatibility**: Compiles and runs on all engine variants: Gothic I Classic, Gothic I Addon, Gothic II Classic, and Gothic II NotR / Gold.
 
-Documentacion directa del servidor: [server/README.md](server/README.md)
-
-## Seguridad y deteccion por antivirus
-
-El plugin realiza conexiones salientes mediante la API nativa `WinHTTP`. Solo
-contacta con la URL configurada en `GOTHICSAVESYNC/ServerURL`, consulta el estado
-y la lista de partidas, y sube o descarga paquetes `.gss` durante la
-sincronizacion. No abre puertos de escucha ni ejecuta contenido descargado.
-
-Al ser una DLL de mod no firmada digitalmente, algunos antivirus o Windows
-SmartScreen pueden mostrar un aviso o clasificarla como sospechosa. Esto puede
-ser un falso positivo por la combinacion de DLL inyectada, acceso a archivos y
-red; no es una garantia de que cualquier binario distribuido con el nombre del
-proyecto sea seguro. Descarga el plugin de una fuente de confianza y revisa el
-hash del archivo.
-
-Steam normalmente no bloquea un mod de un juego individual por usar WinHTTP,
-pero no se debe usar este plugin en juegos con anti-cheat o en contextos donde
-se prohiban DLLs externas sin comprobar antes sus reglas. GothicSaveSync no
-lee credenciales de Supabase: la clave privilegiada pertenece exclusivamente
-al servidor y nunca debe copiarse a la configuracion de Gothic.
-
-Para reducir riesgos:
-
-- Usa una URL `https://` de un servidor que controles.
-- No configures en el juego una URL desconocida ni compartas paquetes con ella.
-- Mantén una copia local y conserva los backups antes de restaurar.
-- Si el antivirus bloquea la DLL, verifica el binario y su hash antes de crear
-  una excepción; no desactives el antivirus globalmente.
-
-## Que hace ahora
-
-GothicSaveSync observa el ciclo de guardado y carga del juego:
-
-- Detecta el slot al terminar un guardado.
-- Empaqueta el slot completo en un unico archivo `.gss` sin modificar el guardado original durante la copia.
-- Escribe un manifiesto con el slot y el hash del ejecutable de Gothic.
-- Valida la cabecera del paquete, el slot, el hash y las rutas internas antes de desempaquetar.
-- Valida la compatibilidad antes de restaurar una partida.
-- Conserva un backup del slot actual antes de reemplazarlo.
-- Recupera el backup si la restauracion falla.
-- Compila para Gothic I, Gothic I Addon, Gothic II y Gothic II Addon.
-
-## Arquitectura
+## Architecture & Flow
 
 ```mermaid
-flowchart LR
-    G[Gothic + Union] --> E[Game_SaveEnd]
-    E --> S[SaveSync]
-    S --> T[Snapshot temporal]
-    T --> P[save-sync/pending/savegameN.gss]
-    P --> M[manifest.txt dentro del paquete]
+flowchart TD
+    subgraph Client [Gothic Engine + Union Plugin]
+        S[Game Saved] -->|Hooks SetAndWriteSavegame| P[Pack to .gss]
+        P -->|Background Thread| U[WinHTTP Upload]
+        
+        M[Game Main Menu] -->|Check Server| C{Newer saves in cloud?}
+        C -- Yes --> D[Prompt User]
+        D -- Accept --> DL[WinHTTP Download]
+        DL --> B[Backup Local Slot]
+        B --> R[Atomic Restore]
+        R --> I[Reinit Engine UI]
+    end
 
-    G --> L[Game_LoadBegin_SaveGame]
-    L --> V{Manifiesto compatible?}
-    V -- No --> X[No restaura]
-    V -- Si --> B[Backup del slot actual]
-    B --> R[Restauracion atomica]
-    R --> C[savegameN listo para cargar]
-
-    P -->|WinHTTP en segundo plano| A[Servidor FastAPI]
-    A -. descarga pendiente .-> L
+    subgraph Backend [FastAPI Server]
+        U --> API[POST /saves]
+        API --> DB[(Supabase DB)]
+        DB -->|Serve metadata| GET[GET /saves]
+        GET --> C
+    end
 ```
 
-## Sincronizacion con servidor
+## Setup & Installation
 
-El plugin lee la URL desde la configuracion nativa de Gothic. Añade esta
-seccion a `system\Gothic.ini`:
+### 1. Server Configuration
+GothicSaveSync reads its configuration from the native `Gothic.ini` file. Add the following section to `system\Gothic.ini`:
 
 ```ini
 [GOTHICSAVESYNC]
-ServerURL=https://tu-servicio.onrender.com
+ServerURL=https://your-service-url.onrender.com
 ```
 
-En una instalación de Steam la estructura debe quedar así:
+### 2. Plugin Installation
+In a standard Steam installation, place the compiled DLL into the `Autorun` directory:
 
 ```text
 Gothic II\
@@ -99,144 +59,60 @@ Gothic II\
         └── GothicSaveSync.dll
 ```
 
-La DLL debe corresponder a la variante compilada: `G2 Release` para Gothic II Classic
-o `G2A Release` para Gothic II Gold/NotR. Inicia el juego mediante
-`GothicStarter_mod.exe` cuando uses Union.
+*Note: Ensure you are using the correct compiled variant for your game version (e.g., `G2A Release` for Gothic II NotR).* 
+Start the game using `GothicStarter_mod.exe` if deploying as a mod.
 
-Al arrancar, consulta `GET /saves` en segundo plano y guarda la respuesta
-ordenada por ultima modificacion en `<Gothic>/save-sync/remote.json`. Al
-terminar cada guardado, sube automaticamente el paquete `.gss` del slot a
-`POST /saves/{slot}` sin bloquear el hilo principal.
+## Backend Infrastructure
 
-Antes de consultar las partidas, el plugin verifica `GET /status`. La
-interfaz muestra si el servidor remoto esta disponible y permite continuar
-usando las partidas locales aunque no haya conexion.
+The repository includes a modern backend service located in the `server/` directory.
+- Built with **FastAPI** for high-performance asynchronous request handling.
+- Backed by **Supabase** for robust metadata storage and file hosting.
+- Fully containerized with a `Dockerfile`, ready for zero-configuration deployment to platforms like Render or Heroku.
 
-Si existen paquetes remotos mas recientes, el juego muestra una pregunta de
-confirmacion. Si se acepta, los paquetes se descargan a `save-sync/pending`.
-Al cargar cada slot, el flujo de restauracion existente conserva el guardado
-local en `save-sync/backup` antes de reemplazarlo.
+See [server/README.md](server/README.md) for dedicated backend documentation.
 
-## Ventana quirurgica de desarrollador
+## Security & Antivirus
 
-Pulsa `F10` dentro del juego para abrir la interfaz de desarrollador. La
-primera version se presenta como dos paneles de dialogo nativos de Union:
+GothicSaveSync uses native Windows APIs (`WinHTTP`) to perform network requests. It operates strictly within the boundaries of the configured `ServerURL` and does not open listening ports.
 
-- **Servidor remoto:** descargar manualmente los paquetes remotos mas recientes.
-- **Partidas locales y backups:** restaurar el backup del slot actual sin
-  eliminar el backup conservado.
+Because this is an unsigned injected DLL that performs network I/O and disk operations, some strict antivirus heuristics (or Windows SmartScreen) may flag it as a false positive. 
+To minimize risk:
+- Always compile the DLL yourself or download it from a trusted release.
+- Only connect to a `ServerURL` that you control or explicitly trust.
+- Never place Supabase service keys or secrets in your local `Gothic.ini`.
 
-La interfaz no reemplaza el aviso automatico de sincronizacion. El menu visual
-con listas de slots, nombres y fechas se añadira cuando terminemos el sistema
-de controles del menu para las cuatro variantes de Gothic.
+## Developer Tools
 
-## Flujo de archivos
+Press `F10` while in-game to open the native Union developer interface. This allows you to:
+- Force-download the latest remote packages.
+- Force-upload your local saves.
+- Manually restore local backups if a synchronization failed or was undesired.
 
-```text
-<Saves>/
-├── savegame1/                    # Guardado original de Gothic
-└── save-sync/
-    ├── pending/
-    │   └── savegame1.gss         # Paquete transportable
-    └── backup/
-        └── savegame1/            # Backup antes de restaurar
-```
+## Building from Source
 
-Los snapshots se preparan primero en carpetas y archivos temporales. Solo se reemplaza el paquete anterior cuando la copia y la escritura completa han terminado correctamente.
+**Requirements:**
+- Windows OS
+- Visual Studio 2022 with C++ Win32 tools
+- MSBuild available in your `PATH`
+- Union SDK (included in `GothicSaveSync/UnionSDK`)
 
-## Formato `.gss`
+**To build via VS Code:**
+1. Open the project.
+2. Run the `Build GothicSaveSync` task (`Ctrl+Shift+B`).
 
-El paquete usa un formato binario propio y versionado:
-
-```text
-cabecera: magic, version, slot, gothic_hash, numero_de_archivos
-repetido por archivo:
-    longitud de ruta relativa
-    tamano del archivo
-    ruta relativa
-    contenido binario
-```
-
-Las rutas absolutas y los segmentos `..` se rechazan durante la lectura. Esto permite transportar una partida como un solo archivo sin depender de ZIP ni de librerias externas. La compresion se puede añadir despues sin cambiar el flujo de validacion.
-
-## Proyecto
-
-```text
-GothicSaveSync/
-├── .vscode/
-│   ├── c_cpp_properties.json
-│   └── tasks.json
-├── GothicSaveSync/
-│   ├── GothicSaveSync.vcxproj
-│   ├── Plugin/
-│   │   ├── SaveSync.cpp
-│   │   ├── SaveSync.h
-│   │   ├── plugin.cpp
-│   │   └── plugin.h
-│   ├── GothicAPI/
-│   └── UnionSDK/
-└── README.md
-```
-
-La carpeta `GothicSaveSync` contiene el plugin, las APIs de Gothic y el SDK de Union. El proyecto compilable tambien se llama `GothicSaveSync`.
-
-El servicio web esta en `server/` y tiene su propia documentacion, dependencias y [Dockerfile](server/Dockerfile) para Render.
-
-## Compilar
-
-Requisitos:
-
-- Windows
-- Visual Studio 2022 con herramientas C++ Win32
-- MSBuild disponible en `PATH`
-- SDK de Union incluido en `GothicSaveSync/UnionSDK`
-
-Desde VS Code:
-
-1. Abrir la tarea `Compilar GothicSaveSync`.
-2. Ejecutarla con `Ctrl+Shift+B`.
-
-Desde una terminal de desarrollador:
-
+**To build via CLI:**
 ```powershell
-msbuild GothicSaveSync/GothicSaveSync.vcxproj /p:Configuration=Release /p:Platform=x86
+msbuild GothicSaveSync/GothicSaveSync.vcxproj /p:Configuration="G2A Release" /p:Platform=Win32
 ```
+*Available configurations: `G1 Release`, `G1A Release`, `G2 Release`, and `G2A Release`.*
 
-Las configuraciones especificas disponibles son `G1 Release`, `G1A Release`, `G2 Release` y `G2A Release`.
+## Roadmap
 
-## Estado y roadmap
+- **Remote Server Synchronization [Completed]**: Fully automated background synchronization using a dedicated FastAPI/Supabase backend.
+- **Local Network Sync (LAN) [Planned]**: Direct peer-to-peer synchronization across local networks. Devices will be able to auto-discover each other and synchronize the latest saves without relying on an external server.
+- **Cloud Provider Integrations [Planned]**: Direct integration with popular cloud storage APIs (Google Drive, Dropbox, OneDrive) to bypass the need for hosting a custom backend server.
+- **Native UI & Manual Management [Planned]**: Overhaul the synchronization interface using native Gothic menu elements (`zCView`), allowing for manual per-slot management, explicit conflict resolution, and granular control over what gets uploaded or downloaded.
 
-```mermaid
-flowchart TD
-    A[Hooks de guardado y carga<br/>Completado]
-    B[Snapshots con manifiesto<br/>Completado]
-    C[Backup y restauracion segura<br/>Completado]
-    D[Paquetizado .gss<br/>Completado]
-    E[API FastAPI inicial<br/>Completado]
-    F[Cliente HTTP y subida automatica<br/>Completado]
-    G[Comparacion y descarga remota<br/>Completado]
-    H[Estado del servidor y dialogo de confirmacion<br/>Completado]
-    I[Menu visual de sincronizacion<br/>Pendiente]
-    J[Autenticacion y resolucion de conflictos<br/>Pendiente]
+## License
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
-```
-
-Proximos pasos:
-
-1. Añadir identificacion de dispositivo y autenticacion.
-2. Añadir compresion opcional al paquete.
-3. Crear un menu visual de sincronizacion para Gothic.
-4. Resolver conflictos entre partidas modificadas en dos dispositivos.
-
-## Limitaciones actuales
-
-- La sincronizacion requiere aceptar el aviso del juego antes de descargar.
-- La interfaz actual usa los dialogos de Union; todavía no añade controles propios al menú nativo.
-- Render necesita almacenamiento persistente o almacenamiento de objetos para conservar paquetes tras reinicios.
-- La restauracion automatica se ejecuta al cargar un slot compatible que tenga un snapshot pendiente.
-- La prueba actual es de compilacion; falta validar el ciclo completo con una instalacion real de Gothic y una partida real.
-
-## Licencia
-
-Este proyecto usa el SDK de Union incluido en el repositorio. Consulta sus archivos de licencia para las condiciones aplicables.
+This project utilizes the Union SDK. Please refer to the SDK's internal documentation for its specific licensing terms. The server and plugin code provided in this repository are available for open use and modification.

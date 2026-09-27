@@ -208,7 +208,14 @@ async def list_saves() -> list[SaveInfo]:
             database_url(),
             params={"select": "*", "order": "uploaded_at.desc"},
         )
-        return [save_info_from_row(row) for row in response.json()]
+        all_saves = [save_info_from_row(row) for row in response.json()]
+        seen = set()
+        deduped = []
+        for save in all_saves:
+            if save.save_id not in seen:
+                seen.add(save.save_id)
+                deduped.append(save)
+        return deduped
 
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     saves = []

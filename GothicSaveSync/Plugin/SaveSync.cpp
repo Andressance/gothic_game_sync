@@ -373,9 +373,9 @@ namespace {
 }
 
 namespace SaveSync {
-  void OnSaveEnd() {
-    int slotID = UnionCore::SaveLoadGameInfo.slotID;
-    SyncLog::Write( "SaveSync::OnSaveEnd: slotID=%d", slotID );
+  void OnSaveEnd( int slotID ) {
+    const char* slotNameRaw = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    SyncLog::Write( "SaveSync::OnSaveEnd: RAW slotID=%d -> slotName='%s'", slotID, slotNameRaw );
     if( slotID < 0 ) {
       SyncLog::Write( "SaveSync::OnSaveEnd: invalid slotID, abort" );
       return;
@@ -444,11 +444,7 @@ namespace SaveSync {
     }
   }
 
-  void OnLoadBegin() {
-    int slotID = UnionCore::SaveLoadGameInfo.slotID;
-    if( slotID < 0 )
-      return;
-
+  bool InstallPendingPackage( const char* slotName, int slotID ) {
     Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
     const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     char source[MAX_PATH];
@@ -457,7 +453,6 @@ namespace SaveSync {
     char staging[MAX_PATH];
     char backupRoot[MAX_PATH];
     char backup[MAX_PATH];
-    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
     if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
       _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
       _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
@@ -473,28 +468,46 @@ namespace SaveSync {
     DWORD pendingAttributes = GetFileAttributesA( pending );
     if( pendingAttributes == INVALID_FILE_ATTRIBUTES ||
         (pendingAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 )
-      return;
+      return false;
 
     if( !EnsureDirectory( root ) || !EnsureDirectory( backupRoot ) )
-      return;
+      return false;
 
     RemoveDirectoryTree( staging );
     if( !ReadPackage( pending, staging, slotID ) || !IsManifestValid( staging, slotID ) ) {
       RemoveDirectoryTree( staging );
-      return;
+      SyncLog::Write( "InstallPendingPackage: failed to read/validate package '%s'", pending );
+      return false;
     }
 
     if( GetFileAttributesA( source ) != INVALID_FILE_ATTRIBUTES ) {
       if( !ReplaceDirectory( source, backup ) )
       {
         RemoveDirectoryTree( staging );
-        return;
+        SyncLog::Write( "InstallPendingPackage: failed to backup source to '%s'", backup );
+        return false;
       }
     }
 
-    if( !ReplaceDirectory( staging, source ) && GetFileAttributesA( backup ) != INVALID_FILE_ATTRIBUTES )
-      ReplaceDirectory( backup, source );
+    bool success = false;
+    if( ReplaceDirectory( staging, source ) ) {
+      success = true;
+      SyncLog::Write( "InstallPendingPackage: successfully installed '%s'", slotName );
+    } else {
+      if( GetFileAttributesA( backup ) != INVALID_FILE_ATTRIBUTES )
+        ReplaceDirectory( backup, source );
+      SyncLog::Write( "InstallPendingPackage: failed to install '%s', restored backup", slotName );
+    }
     RemoveDirectoryTree( staging );
+    return success;
+  }
+
+  void OnLoadBegin() {
+    int slotID = UnionCore::SaveLoadGameInfo.slotID;
+    if( slotID < 0 )
+      return;
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    InstallPendingPackage( slotName, slotID );
   }
 
   const char* GetLatestPackagePath() {

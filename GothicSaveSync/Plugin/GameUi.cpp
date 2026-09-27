@@ -170,11 +170,20 @@ namespace {
     }
   }
 
-  // Check for a key-toggled event using the Gothic input system.
-  bool KeyToggled( int key ) {
-    if( zinput )
-      return zinput->KeyToggled( key ) != 0;
-    return (GetAsyncKeyState( key ) & 1) != 0;
+  // Check for a key-toggled event using robust Windows async input to bypass engine quirks.
+  bool KeyToggled( int virtualKey ) {
+    static bool keyState[256] = { false };
+    if ( virtualKey < 0 || virtualKey > 255 ) return false;
+    
+    bool isDown = (GetAsyncKeyState( virtualKey ) & 0x8000) != 0;
+    if ( isDown && !keyState[virtualKey] ) {
+      keyState[virtualKey] = true;
+      return true;
+    }
+    if ( !isDown ) {
+      keyState[virtualKey] = false;
+    }
+    return false;
   }
 }
 
@@ -274,8 +283,8 @@ namespace GameUi {
       case OVERLAY_INFO: {
         RenderFooter( "[Pulsa cualquier tecla]" );
         DismissTimer += dt;
-        if( DismissTimer >= InfoTimeout || KeyToggled( KEY_RETURN ) ||
-            KeyToggled( KEY_ESCAPE ) || KeyToggled( KEY_SPACE ) ) {
+        if( DismissTimer >= InfoTimeout || KeyToggled( VK_RETURN ) ||
+            KeyToggled( VK_ESCAPE ) || KeyToggled( VK_SPACE ) ) {
           DestroyOverlay();
         }
         break;
@@ -285,8 +294,8 @@ namespace GameUi {
       case OVERLAY_WARNING: {
         RenderFooter( "[Pulsa ENTER o ESC]" );
         DismissTimer += dt;
-        if( DismissTimer >= WarningTimeout || KeyToggled( KEY_RETURN ) ||
-            KeyToggled( KEY_ESCAPE ) ) {
+        if( DismissTimer >= WarningTimeout || KeyToggled( VK_RETURN ) ||
+            KeyToggled( VK_ESCAPE ) ) {
           DestroyOverlay();
         }
         break;
@@ -307,10 +316,10 @@ namespace GameUi {
           OverlayView->PrintCX( footerY, zSTRING( "[ENTER = Si]   [ESC = No]" ) );
         }
 
-        if( KeyToggled( KEY_RETURN ) || KeyToggled( KEY_Y ) ) {
+        if( KeyToggled( VK_RETURN ) || KeyToggled( 'Y' ) ) {
           QResult = QUESTION_YES;
           DestroyOverlay();
-        } else if( KeyToggled( KEY_ESCAPE ) || KeyToggled( KEY_N ) ) {
+        } else if( KeyToggled( VK_ESCAPE ) || KeyToggled( 'N' ) ) {
           QResult = QUESTION_NO;
           DestroyOverlay();
         }
@@ -322,22 +331,22 @@ namespace GameUi {
         RenderMenuItems();
         RenderFooter( "[Arriba/Abajo = Navegar]  [ENTER = Elegir]  [ESC = Cerrar]" );
 
-        if( KeyToggled( KEY_UP ) || KeyToggled( KEY_W ) ) {
+        if( KeyToggled( VK_UP ) || KeyToggled( 'W' ) ) {
           MenuCursor--;
           if( MenuCursor < 0 )
             MenuCursor = MENUITEM_COUNT - 1;
         }
-        if( KeyToggled( KEY_DOWN ) || KeyToggled( KEY_S ) ) {
+        if( KeyToggled( VK_DOWN ) || KeyToggled( 'S' ) ) {
           MenuCursor++;
           if( MenuCursor >= MENUITEM_COUNT )
             MenuCursor = 0;
         }
 
-        if( KeyToggled( KEY_RETURN ) || KeyToggled( KEY_SPACE ) ) {
+        if( KeyToggled( VK_RETURN ) || KeyToggled( VK_SPACE ) ) {
           MenuChoice = MenuCursor;
           DestroyOverlay();
         }
-        if( KeyToggled( KEY_ESCAPE ) ) {
+        if( KeyToggled( VK_ESCAPE ) ) {
           MenuChoice = MENUITEM_CLOSE;
           DestroyOverlay();
         }
@@ -347,5 +356,9 @@ namespace GameUi {
       default:
         break;
     }
+    
+    // Block the game from processing movement/actions while overlay is active.
+    if( zinput )
+      zinput->ClearKeyBuffer();
   }
 }
