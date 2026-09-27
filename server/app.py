@@ -176,11 +176,13 @@ async def upload_save(save_id: str, save: UploadFile = File(...)) -> SaveInfo:
             headers={"Content-Type": "application/octet-stream", "x-upsert": "true"},
         )
         try:
+            db_payload = info.model_dump(mode="json")
+            db_payload.pop("uploaded_at_epoch", None)
             await supabase_request(
                 "POST",
                 database_url(),
                 content=json.dumps({
-                    **info.model_dump(mode="json"),
+                    **db_payload,
                     "storage_path": f"{save_id}.gss",
                 }).encode(),
                 headers={"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
