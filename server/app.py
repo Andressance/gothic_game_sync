@@ -97,8 +97,10 @@ async def supabase_request(
                 method, url, content=content, params=params, headers=request_headers
             )
     except httpx.RequestError as error:
+        print(f"Supabase request error: {error}")
         raise HTTPException(status_code=502, detail="Supabase is unreachable.") from error
     if response.is_error:
+        print(f"Supabase error response: {response.status_code} {response.text}")
         raise HTTPException(status_code=502, detail="Supabase request failed.")
     return response
 
