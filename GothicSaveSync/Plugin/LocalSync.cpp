@@ -11,6 +11,7 @@
 // -----------------------------------------------------------------------
 
 // winsock2 MUST come before any header that pulls in windows.h
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <winsock2.h>
 #include <ws2tcpip.h>
 

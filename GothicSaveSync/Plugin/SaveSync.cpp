@@ -19,11 +19,29 @@ namespace {
     return (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
   }
 
+}
+
+namespace SaveSync {
   bool EnsureDirectory( const char* path ) {
     if( CreateDirectoryA( path, 0 ) != 0 )
       return true;
 
     return GetLastError() == ERROR_ALREADY_EXISTS;
+  }
+
+  bool EnsureParentDirectories( const char* path ) {
+    char parent[MAX_PATH];
+    strcpy_s( parent, path );
+    char* separator = strrchr( parent, '\\' );
+    if( separator == 0 )
+      return true;
+
+    *separator = 0;
+    if( parent[0] == 0 )
+      return true;
+    if( EnsureDirectory( parent ) )
+      return true;
+    return EnsureParentDirectories( parent ) && EnsureDirectory( parent );
   }
 
   bool RemoveDirectoryTree( const char* path ) {
@@ -85,6 +103,13 @@ namespace {
     FindClose( search );
     return result;
   }
+}
+
+namespace {
+  using SaveSync::EnsureDirectory;
+  using SaveSync::EnsureParentDirectories;
+  using SaveSync::RemoveDirectoryTree;
+  using SaveSync::CopyDirectory;
 
   void WriteManifest( const char* target, int slotID ) {
     char path[MAX_PATH];
@@ -165,20 +190,6 @@ namespace {
     return path[0] != 0;
   }
 
-  bool EnsureParentDirectories( const char* path ) {
-    char parent[MAX_PATH];
-    strcpy_s( parent, path );
-    char* separator = strrchr( parent, '\\' );
-    if( separator == 0 )
-      return true;
-
-    *separator = 0;
-    if( parent[0] == 0 )
-      return true;
-    if( EnsureDirectory( parent ) )
-      return true;
-    return EnsureParentDirectories( parent ) && EnsureDirectory( parent );
-  }
 
   bool WritePackageFile( FILE* package, const char* source, const char* relativePath,
     unsigned int& fileCount ) {

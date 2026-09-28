@@ -1226,6 +1226,10 @@
     <ClInclude Include="GothicAPI\Gothic_I_Classic\G1_Names.hpp" />
     <ClInclude Include="GothicAPI\zGothicAPI.h" />
     <ClInclude Include="Plugin\plugin.h" />
+    <ClInclude Include="Plugin\LocalSync.h" />
+    <ClInclude Include="Plugin\LanSyncUi.h" />
+    <ClInclude Include="Plugin\SyncHistory.h" />
+    <ClInclude Include="Plugin\SyncHistoryUi.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="UnionSDK\array\Array.h" />
     <ClInclude Include="UnionSDK\array\ArrayInterface.h" />
@@ -1253,6 +1257,10 @@
     <ClCompile Include="Plugin\GameUi.cpp" />
     <ClCompile Include="Plugin\RemoteSync.cpp" />
     <ClCompile Include="Plugin\SaveSync.cpp" />
+    <ClCompile Include="Plugin\LocalSync.cpp" />
+    <ClCompile Include="Plugin\LanSyncUi.cpp" />
+    <ClCompile Include="Plugin\SyncHistory.cpp" />
+    <ClCompile Include="Plugin\SyncHistoryUi.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="GothicAPI\Gothic_II_Addon\G2A_ClassDef.cpp" />
     <ClCompile Include="GothicAPI\Gothic_II_Addon\G2A_GlobalVariables.cpp" />

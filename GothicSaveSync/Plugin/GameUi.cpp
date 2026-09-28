@@ -243,6 +243,7 @@ namespace GameUi {
     MenuLabels[MENUITEM_UPLOAD_SAVE]     = "Enviar ultimo guardado al servidor";
     MenuLabels[MENUITEM_RESTORE_BACKUP]  = "Restaurar backup del slot actual";
     MenuLabels[MENUITEM_LAN_SYNC]        = "Sincronizacion LAN";
+    MenuLabels[MENUITEM_HISTORY]         = "Historial de Sincronizacion";
     MenuLabels[MENUITEM_CLOSE]           = "Cerrar";
 
     strncpy_s( PanelTitle, "GothicSaveSync", sizeof(PanelTitle) - 1 );
