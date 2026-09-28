@@ -16,6 +16,7 @@
 
 #include "LocalSync.h"
 #include "SaveSync.h"
+#include "SyncHistory.h"
 #include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
@@ -306,9 +307,11 @@ namespace {
       return false;
     }
 
+    SyncHistory::RecordEntry( slotName, slotID, "lan", PeerNameBuf );
+
     MoveFileExA( tempPath, targetPath, MOVEFILE_REPLACE_EXISTING );
 
-    bool installed = SaveSync::InstallPendingPackage( slotName, slotID );
+    bool installed = SaveSync::InstallPendingPackage( slotName, slotID, "lan" );
     SyncLog::Write( "LocalSync: received slot %d (%s) -> installed=%d", slotID, slotName, installed );
 
     if( installed ) {

@@ -1,5 +1,6 @@
 #include "SaveSync.h"
 #include "SyncLog.h"
+#include "SyncHistory.h"
 #include "plugin.h"
 #include "UnionAfx.h"
 
@@ -444,20 +445,20 @@ namespace SaveSync {
     }
   }
 
-  bool InstallPendingPackage( const char* slotName, int slotID ) {
+  bool InstallPendingPackage( const char* slotName, int slotID, const char* source ) {
     Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
     const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
-    char source[MAX_PATH];
+    char sourceDir[MAX_PATH];
     char root[MAX_PATH];
     char pending[MAX_PATH];
     char staging[MAX_PATH];
     char backupRoot[MAX_PATH];
     char backup[MAX_PATH];
     if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( sourceDir, sizeof(sourceDir), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
       _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
     } else {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( sourceDir, sizeof(sourceDir), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
       _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
     }
     _snprintf_s( pending, sizeof(pending), _TRUNCATE, "%s\\pending\\%s.gss", root, slotName );
@@ -480,8 +481,9 @@ namespace SaveSync {
       return false;
     }
 
-    if( GetFileAttributesA( source ) != INVALID_FILE_ATTRIBUTES ) {
-      if( !ReplaceDirectory( source, backup ) )
+    if( GetFileAttributesA( sourceDir ) != INVALID_FILE_ATTRIBUTES ) {
+      SyncHistory::RecordEntry( slotName, slotID, source ? source : "desconocido", "" );
+      if( !ReplaceDirectory( sourceDir, backup ) )
       {
         RemoveDirectoryTree( staging );
         SyncLog::Write( "InstallPendingPackage: failed to backup source to '%s'", backup );
@@ -490,12 +492,12 @@ namespace SaveSync {
     }
 
     bool success = false;
-    if( ReplaceDirectory( staging, source ) ) {
+    if( ReplaceDirectory( staging, sourceDir ) ) {
       success = true;
       SyncLog::Write( "InstallPendingPackage: successfully installed '%s'", slotName );
     } else {
       if( GetFileAttributesA( backup ) != INVALID_FILE_ATTRIBUTES )
-        ReplaceDirectory( backup, source );
+        ReplaceDirectory( backup, sourceDir );
       SyncLog::Write( "InstallPendingPackage: failed to install '%s', restored backup", slotName );
     }
     RemoveDirectoryTree( staging );
@@ -507,7 +509,7 @@ namespace SaveSync {
     if( slotID < 0 )
       return;
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    InstallPendingPackage( slotName, slotID );
+    InstallPendingPackage( slotName, slotID, "auto" );
   }
 
   const char* GetLatestPackagePath() {

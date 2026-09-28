@@ -3,6 +3,8 @@
 #include "GameUi.h"
 #include "LocalSync.h"
 #include "LanSyncUi.h"
+#include "SyncHistory.h"
+#include "SyncHistoryUi.h"
 #include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
@@ -55,7 +57,8 @@ namespace {
     UI_SYNC_QUESTION_SHOWN,     // yes/no question about downloading
     UI_DEV_MENU_SHOWN,          // developer menu overlay
     UI_DEV_RESULT_INFO,         // result feedback after a menu action
-    UI_LAN_SYNC_ACTIVE          // LAN sync overlay is on screen
+    UI_LAN_SYNC_ACTIVE,         // LAN sync overlay is on screen
+    UI_HISTORY_ACTIVE           // History overlay is on screen
   };
 
   UiPhase CurrentUiPhase = UI_IDLE;
@@ -279,7 +282,7 @@ namespace {
         
         SyncLog::Write( "DownloadSave: saveID='%s' resolved slotID=%d", save.saveID, slotID );
         if( slotID >= 0 ) {
-          bool installed = SaveSync::InstallPendingPackage( save.saveID, slotID );
+          bool installed = SaveSync::InstallPendingPackage( save.saveID, slotID, "remoto" );
           SyncLog::Write( "DownloadSave: InstallPendingPackage -> %d", installed );
           if( installed )
             NeedsSavegameRefresh = true;
@@ -624,6 +627,11 @@ namespace RemoteSync {
             CurrentUiPhase = UI_LAN_SYNC_ACTIVE;
             break;
 
+          case GameUi::MENUITEM_HISTORY:
+            SyncHistoryUi::Open();
+            CurrentUiPhase = UI_HISTORY_ACTIVE;
+            break;
+
           default: // MENUITEM_CLOSE or escape
             DeveloperPanelOpen = false;
             CurrentUiPhase = UI_IDLE;
@@ -647,11 +655,20 @@ namespace RemoteSync {
         }
         break;
       }
+
+      // History overlay is active — wait for it to close.
+      case UI_HISTORY_ACTIVE: {
+        if( !SyncHistoryUi::IsActive() ) {
+          DeveloperPanelOpen = false;
+          CurrentUiPhase = UI_IDLE;
+        }
+        break;
+      }
     }
   }
 
     void OpenDeveloperPanel() {
-      if( DeveloperPanelOpen || GameUi::IsActive() || LanSyncUi::IsActive() )
+      if( DeveloperPanelOpen || GameUi::IsActive() || LanSyncUi::IsActive() || SyncHistoryUi::IsActive() )
         return;
       if( (GetAsyncKeyState(VK_F10) & 1) == 0 )
         return;
