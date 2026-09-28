@@ -4,6 +4,8 @@
 #include "RemoteSync.h"
 #include "DeveloperUi.h"
 #include "GameUi.h"
+#include "LocalSync.h"
+#include "LanSyncUi.h"
 #include "SyncLog.h"
 
 #include <windows.h>
@@ -70,10 +72,13 @@ cexport void Game_Init() {
   DebugLogHook( "Game_Init reached" );
   DebugLog( "Game_Init reached" );
   GameUi::Init();
+  LocalSync::Init();
   RemoteSync::Start();
 }
 
 cexport void Game_Exit() {
+  LanSyncUi::Close();
+  LocalSync::Shutdown();
   GameUi::Shutdown();
 }
 
@@ -83,6 +88,8 @@ cexport void Game_PreLoop() {
 cexport void Game_Loop() {
   DebugLogHook( "Game_Loop reached" );
   GameUi::Poll();
+  LanSyncUi::Poll();
+  LocalSync::Poll();
   RemoteSync::PollUi();
   DeveloperUi::Poll();
 }
@@ -92,6 +99,7 @@ cexport void Game_PostLoop() {
 
 cexport void Game_MenuLoop() {
   GameUi::Poll();
+  LanSyncUi::Poll();
 }
 
 cexport void Game_SaveBegin() {

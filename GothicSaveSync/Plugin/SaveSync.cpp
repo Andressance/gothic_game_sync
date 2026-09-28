@@ -555,4 +555,80 @@ namespace SaveSync {
       saveDirectory, slotName );
     return GetFileAttributesA( path ) != INVALID_FILE_ATTRIBUTES;
   }
+
+  int GetSaveSlotList( SaveSlotInfo* slots, int maxSlots ) {
+    if( !zoptions ) return 0;
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+
+    int count = 0;
+    for( int i = 0; i < 20 && count < maxSlots; ++i ) {
+      const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( i ).ToChar();
+
+      char path[MAX_PATH];
+      if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' )
+        _snprintf_s( path, sizeof(path), _TRUNCATE, "%s%s%s",
+          gameDirectory.ToChar(), saveDirectory, slotName );
+      else
+        _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s\\%s",
+          gameDirectory.ToChar(), saveDirectory, slotName );
+
+      WIN32_FILE_ATTRIBUTE_DATA data;
+      if( !GetFileAttributesExA( path, GetFileExInfoStandard, &data ) ||
+          (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 )
+        continue;
+
+      slots[count].slotID = i;
+      slots[count].exists = true;
+      strcpy_s( slots[count].name, slotName );
+
+      SYSTEMTIME st;
+      FileTimeToSystemTime( &data.ftLastWriteTime, &st );
+      _snprintf_s( slots[count].dateStr, sizeof(slots[count].dateStr), _TRUNCATE,
+        "%02u/%02u/%04u %02u:%02u", st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute );
+
+      ULARGE_INTEGER val;
+      val.LowPart  = data.ftLastWriteTime.dwLowDateTime;
+      val.HighPart = data.ftLastWriteTime.dwHighDateTime;
+      slots[count].timestamp = (__int64)(val.QuadPart / 10000000ULL - 11644473600ULL);
+
+      ++count;
+    }
+    return count;
+  }
+
+  bool PackSlotToFile( int slotID, const char* outputPath ) {
+    if( !zoptions ) return false;
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+
+    char source[MAX_PATH];
+    char staging[MAX_PATH];
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s",
+        gameDirectory.ToChar(), saveDirectory, slotName );
+    } else {
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s",
+        gameDirectory.ToChar(), saveDirectory, slotName );
+    }
+
+    _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s.lansync", source );
+
+    DWORD attr = GetFileAttributesA( source );
+    if( attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) == 0 )
+      return false;
+
+    RemoveDirectoryTree( staging );
+    if( !CopyDirectory( source, staging ) ) {
+      RemoveDirectoryTree( staging );
+      return false;
+    }
+
+    WriteManifest( staging, slotID );
+    EnsureParentDirectories( outputPath );
+    bool result = PackDirectory( staging, outputPath, slotID );
+    RemoveDirectoryTree( staging );
+    return result;
+  }
 }

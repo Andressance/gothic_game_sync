@@ -1,6 +1,8 @@
 #include "RemoteSync.h"
 #include "SaveSync.h"
 #include "GameUi.h"
+#include "LocalSync.h"
+#include "LanSyncUi.h"
 #include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
@@ -52,7 +54,8 @@ namespace {
     UI_SERVER_STATUS_SHOWN,     // info/warning overlay on screen
     UI_SYNC_QUESTION_SHOWN,     // yes/no question about downloading
     UI_DEV_MENU_SHOWN,          // developer menu overlay
-    UI_DEV_RESULT_INFO          // result feedback after a menu action
+    UI_DEV_RESULT_INFO,         // result feedback after a menu action
+    UI_LAN_SYNC_ACTIVE          // LAN sync overlay is on screen
   };
 
   UiPhase CurrentUiPhase = UI_IDLE;
@@ -509,9 +512,6 @@ namespace RemoteSync {
   }
 
   void PollUi() {
-    if( ConfiguredServerUrl[0] == 0 )
-      return;
-
     if( NeedsSavegameRefresh ) {
       NeedsSavegameRefresh = false;
       if( gameMan && gameMan->savegameManager ) {
@@ -529,6 +529,8 @@ namespace RemoteSync {
 
       // Nothing pending — check for new events.
       case UI_IDLE: {
+        if( ConfiguredServerUrl[0] == 0 )
+          break;
         LONG status = InterlockedCompareExchange( &ServerStatus, 0, 0 );
 
         // Step 1: show server status once.
@@ -616,6 +618,12 @@ namespace RemoteSync {
             CurrentUiPhase = UI_DEV_RESULT_INFO;
             break;
 
+          case GameUi::MENUITEM_LAN_SYNC:
+            LocalSync::StartDiscovery();
+            LanSyncUi::Open();
+            CurrentUiPhase = UI_LAN_SYNC_ACTIVE;
+            break;
+
           default: // MENUITEM_CLOSE or escape
             DeveloperPanelOpen = false;
             CurrentUiPhase = UI_IDLE;
@@ -630,11 +638,20 @@ namespace RemoteSync {
         CurrentUiPhase = UI_IDLE;
         break;
       }
+
+      // LAN sync overlay is active — wait for it to close.
+      case UI_LAN_SYNC_ACTIVE: {
+        if( !LanSyncUi::IsActive() ) {
+          DeveloperPanelOpen = false;
+          CurrentUiPhase = UI_IDLE;
+        }
+        break;
+      }
     }
   }
 
     void OpenDeveloperPanel() {
-      if( DeveloperPanelOpen || GameUi::IsActive() )
+      if( DeveloperPanelOpen || GameUi::IsActive() || LanSyncUi::IsActive() )
         return;
       if( (GetAsyncKeyState(VK_F10) & 1) == 0 )
         return;
