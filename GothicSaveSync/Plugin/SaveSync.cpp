@@ -575,7 +575,7 @@ namespace SaveSync {
     const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
 
     int count = 0;
-    for( int i = 0; i < 20 && count < maxSlots; ++i ) {
+    for( int i = 0; i <= 20 && count < maxSlots; ++i ) {
       const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( i ).ToChar();
 
       char path[MAX_PATH];
