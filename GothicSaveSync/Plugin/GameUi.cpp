@@ -242,6 +242,7 @@ namespace GameUi {
     MenuLabels[MENUITEM_DOWNLOAD_REMOTE] = "Descargar partidas remotas";
     MenuLabels[MENUITEM_UPLOAD_SAVE]     = "Enviar ultimo guardado al servidor";
     MenuLabels[MENUITEM_RESTORE_BACKUP]  = "Restaurar backup del slot actual";
+    MenuLabels[MENUITEM_MANUAL_SYNC]     = "Gestion manual de partidas";
     MenuLabels[MENUITEM_LAN_SYNC]        = "Sincronizacion LAN";
     MenuLabels[MENUITEM_HISTORY]         = "Historial de Sincronizacion";
     MenuLabels[MENUITEM_CLOSE]           = "Cerrar";

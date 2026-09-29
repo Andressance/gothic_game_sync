@@ -2634,6 +2634,9 @@
     <ClInclude Include="Plugin\plugin.h">
       <Filter>Source code\plugin</Filter>
     </ClInclude>
+    <ClInclude Include="Plugin\ManualSyncUi.h">
+      <Filter>Source code\plugin</Filter>
+    </ClInclude>
     <ClInclude Include="UnionSDK\UnionAfx.h">
       <Filter>Union SDK</Filter>
     </ClInclude>
@@ -2754,6 +2757,9 @@
       <Filter>Source code\plugin</Filter>
     </ClCompile>
     <ClCompile Include="Plugin\SaveSync.cpp">
+      <Filter>Source code\plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="Plugin\ManualSyncUi.cpp">
       <Filter>Source code\plugin</Filter>
     </ClCompile>
   </ItemGroup>

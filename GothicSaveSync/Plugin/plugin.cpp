@@ -6,6 +6,7 @@
 #include "GameUi.h"
 #include "LocalSync.h"
 #include "LanSyncUi.h"
+#include "ManualSyncUi.h"
 #include "SyncHistoryUi.h"
 #include "SyncLog.h"
 
@@ -79,6 +80,7 @@ cexport void Game_Init() {
 
 cexport void Game_Exit() {
   SyncHistoryUi::Close();
+  ManualSyncUi::Close();
   LanSyncUi::Close();
   LocalSync::Shutdown();
   GameUi::Shutdown();
@@ -92,6 +94,7 @@ cexport void Game_Loop() {
   GameUi::Poll();
   SyncHistoryUi::Poll();
   LanSyncUi::Poll();
+  ManualSyncUi::Poll();
   LocalSync::Poll();
   RemoteSync::PollUi();
   DeveloperUi::Poll();
@@ -104,6 +107,7 @@ cexport void Game_MenuLoop() {
   GameUi::Poll();
   SyncHistoryUi::Poll();
   LanSyncUi::Poll();
+  ManualSyncUi::Poll();
 }
 
 cexport void Game_SaveBegin() {

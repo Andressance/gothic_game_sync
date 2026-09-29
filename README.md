@@ -109,9 +109,9 @@ msbuild GothicSaveSync/GothicSaveSync.vcxproj /p:Configuration="G2A Release" /p:
 ## Roadmap
 
 - **Remote Server Synchronization [Completed]**: Fully automated background synchronization using a dedicated FastAPI/Supabase backend.
-- **Local Network Sync (LAN) [Planned]**: Direct peer-to-peer synchronization across local networks. Devices will be able to auto-discover each other and synchronize the latest saves without relying on an external server.
+- **Local Network Sync (LAN) [Completed]**: Direct peer-to-peer synchronization across local networks. Devices will be able to auto-discover each other and synchronize the latest saves without relying on an external server.
 - **Cloud Provider Integrations [Planned]**: Direct integration with popular cloud storage APIs (Google Drive, Dropbox, OneDrive) to bypass the need for hosting a custom backend server.
-- **Native UI & Manual Management [Planned]**: Overhaul the synchronization interface using native Gothic menu elements (`zCView`), allowing for manual per-slot management, explicit conflict resolution, and granular control over what gets uploaded or downloaded.
+- **Native UI & Manual Management [Completed]**: Overhaul the synchronization interface using native Gothic menu elements (`zCView`), allowing for manual per-slot management, explicit conflict resolution, and granular control over what gets uploaded or downloaded.
 
 ## License
 

@@ -3,6 +3,7 @@
 #include "GameUi.h"
 #include "LocalSync.h"
 #include "LanSyncUi.h"
+#include "ManualSyncUi.h"
 #include "SyncHistory.h"
 #include "SyncHistoryUi.h"
 #include "SyncLog.h"
@@ -13,6 +14,7 @@
 #include <winhttp.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -58,7 +60,8 @@ namespace {
     UI_DEV_MENU_SHOWN,          // developer menu overlay
     UI_DEV_RESULT_INFO,         // result feedback after a menu action
     UI_LAN_SYNC_ACTIVE,         // LAN sync overlay is on screen
-    UI_HISTORY_ACTIVE           // History overlay is on screen
+    UI_HISTORY_ACTIVE,          // History overlay is on screen
+    UI_MANUAL_SYNC_ACTIVE       // Manual management overlay is on screen
   };
 
   UiPhase CurrentUiPhase = UI_IDLE;
@@ -627,6 +630,11 @@ namespace RemoteSync {
             CurrentUiPhase = UI_LAN_SYNC_ACTIVE;
             break;
 
+          case GameUi::MENUITEM_MANUAL_SYNC:
+            ManualSyncUi::Open();
+            CurrentUiPhase = UI_MANUAL_SYNC_ACTIVE;
+            break;
+
           case GameUi::MENUITEM_HISTORY:
             SyncHistoryUi::Open();
             CurrentUiPhase = UI_HISTORY_ACTIVE;
@@ -664,11 +672,20 @@ namespace RemoteSync {
         }
         break;
       }
+
+      // Manual management overlay is active — wait for it to close.
+      case UI_MANUAL_SYNC_ACTIVE: {
+        if( !ManualSyncUi::IsActive() ) {
+          DeveloperPanelOpen = false;
+          CurrentUiPhase = UI_IDLE;
+        }
+        break;
+      }
     }
   }
 
     void OpenDeveloperPanel() {
-      if( DeveloperPanelOpen || GameUi::IsActive() || LanSyncUi::IsActive() || SyncHistoryUi::IsActive() )
+      if( DeveloperPanelOpen || GameUi::IsActive() || LanSyncUi::IsActive() || SyncHistoryUi::IsActive() || ManualSyncUi::IsActive() )
         return;
       if( (GetAsyncKeyState(VK_F10) & 1) == 0 )
         return;
@@ -701,5 +718,117 @@ namespace RemoteSync {
     strcpy_s( job->serverUrl, serverUrl );
     SyncLog::Write( "UploadSave: launching upload thread" );
     CloseHandle( CreateThread( 0, 0, UploadThread, job, 0, 0 ) );
+  }
+
+  bool IsServerConfigured() {
+    return ConfiguredServerUrl[0] != 0;
+  }
+
+  const char* GetServerUrl() {
+    return ConfiguredServerUrl;
+  }
+
+  void UploadSlot( int slotID ) {
+    if( !zoptions || ConfiguredServerUrl[0] == 0 ) return;
+
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+
+    char packageDir[MAX_PATH];
+    char packagePath[MAX_PATH];
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( packageDir, sizeof(packageDir), _TRUNCATE, "%s%ssave-sync\\pending",
+        gameDirectory.ToChar(), saveDirectory );
+    } else {
+      _snprintf_s( packageDir, sizeof(packageDir), _TRUNCATE, "%s\\%s\\save-sync\\pending",
+        gameDirectory.ToChar(), saveDirectory );
+    }
+    SaveSync::EnsureDirectory( packageDir );
+    _snprintf_s( packagePath, sizeof(packagePath), _TRUNCATE, "%s\\%s.gss", packageDir, slotName );
+
+    SyncLog::Write( "UploadSlot: packing slot %d ('%s') -> '%s'", slotID, slotName, packagePath );
+    if( !SaveSync::PackSlotToFile( slotID, packagePath ) ) {
+      SyncLog::Write( "UploadSlot: PackSlotToFile failed" );
+      return;
+    }
+    UploadSave( slotName, packagePath );
+  }
+
+  void DownloadSlotBySaveID( const char* saveID ) {
+    if( ConfiguredServerUrl[0] == 0 || !saveID || saveID[0] == 0 ) return;
+
+    RemoteSave save = {};
+    strcpy_s( save.saveID, saveID );
+    save.uploadedAt = 0;
+
+    SyncLog::Write( "DownloadSlotBySaveID: '%s'", saveID );
+    DownloadSave( ConfiguredServerUrl, save );
+  }
+
+  int FetchRemoteSlotList( RemoteSlotInfo* slots, int maxSlots ) {
+    if( ConfiguredServerUrl[0] == 0 || !slots || maxSlots <= 0 ) return 0;
+
+    FetchRemoteSaves( ConfiguredServerUrl );
+    unsigned int count = ReadRemoteSaves();
+
+    int result = 0;
+    for( unsigned int i = 0; i < count && result < maxSlots; ++i ) {
+      strcpy_s( slots[result].saveID, RemoteSaves[i].saveID );
+      slots[result].uploadedAtEpoch = RemoteSaves[i].uploadedAt;
+      slots[result].size = 0;
+
+      // Convert epoch to human-readable date.
+      if( RemoteSaves[i].uploadedAt > 0 ) {
+        time_t t = (time_t)RemoteSaves[i].uploadedAt;
+        struct tm local;
+        localtime_s( &local, &t );
+        _snprintf_s( slots[result].dateStr, sizeof(slots[result].dateStr), _TRUNCATE,
+          "%02d/%02d/%04d %02d:%02d",
+          local.tm_mday, local.tm_mon + 1, local.tm_year + 1900,
+          local.tm_hour, local.tm_min );
+      } else {
+        strcpy_s( slots[result].dateStr, "?" );
+      }
+      ++result;
+    }
+    SyncLog::Write( "FetchRemoteSlotList: returned %d entries", result );
+    return result;
+  }
+
+  bool RestoreBackupForSlot( int slotID ) {
+    if( slotID < 0 || !zoptions ) return false;
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+
+    char root[MAX_PATH];
+    char source[MAX_PATH];
+    char backup[MAX_PATH];
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
+      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
+    } else {
+      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
+      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
+    }
+    _snprintf_s( backup, sizeof(backup), _TRUNCATE, "%s\\backup\\%s", root, slotName );
+
+    if( GetFileAttributesA( backup ) == INVALID_FILE_ATTRIBUTES ) {
+      SyncLog::Write( "RestoreBackupForSlot: no backup for slot %d", slotID );
+      return false;
+    }
+
+    char staging[MAX_PATH];
+    _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s\\restore.tmp", root );
+    SaveSync::RemoveDirectoryTree( staging );
+    if( !SaveSync::CopyDirectory( backup, staging ) ) return false;
+    SaveSync::RemoveDirectoryTree( source );
+    if( MoveFileA( staging, source ) != 0 ) {
+      SyncLog::Write( "RestoreBackupForSlot: slot %d restored", slotID );
+      return true;
+    }
+    SaveSync::RemoveDirectoryTree( staging );
+    return false;
   }
 }

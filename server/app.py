@@ -266,6 +266,27 @@ async def delete_save(save_id: str) -> None:
     metadata_path(save_id).unlink(missing_ok=True)
 
 
+@app.get("/saves/slots")
+async def list_save_slots() -> dict[str, list[dict[str, object]]]:
+    """Return all remote saves as a structured JSON suitable for the manual
+    management UI.  Each entry includes save_id, filename, size,
+    uploaded_at_epoch and a human-readable date string."""
+    raw_saves = await list_saves()
+    remote_slots: list[dict[str, object]] = []
+    for save in raw_saves:
+        dt = save.uploaded_at
+        remote_slots.append(
+            {
+                "save_id": save.save_id,
+                "filename": save.filename,
+                "size": save.size,
+                "uploaded_at_epoch": save.uploaded_at_epoch,
+                "date_str": dt.strftime("%d/%m/%Y %H:%M"),
+            }
+        )
+    return {"remote_saves": remote_slots}
+
+
 @app.get("/status")
 async def service_status() -> dict[str, str]:
     if not USE_SUPABASE:
