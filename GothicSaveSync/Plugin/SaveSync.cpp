@@ -103,6 +103,21 @@ namespace SaveSync {
     FindClose( search );
     return result;
   }
+
+  bool GetSaveRoot( char* out, size_t outSize ) {
+    if( !zoptions ) return false;
+    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
+    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' )
+      _snprintf_s( out, outSize, _TRUNCATE, "%s%s", gameDirectory.ToChar(), saveDirectory );
+    else
+      _snprintf_s( out, outSize, _TRUNCATE, "%s\\%s", gameDirectory.ToChar(), saveDirectory );
+
+    size_t length = strlen( out );
+    while( length > 0 && (out[length - 1] == '\\' || out[length - 1] == '/') )
+      out[--length] = 0;
+    return true;
+  }
 }
 
 namespace {
@@ -393,8 +408,9 @@ namespace SaveSync {
       return;
     }
 
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) )
+      return;
     char source[MAX_PATH];
     char syncDirectory[MAX_PATH];
     char root[MAX_PATH];
@@ -403,14 +419,8 @@ namespace SaveSync {
     char stagingPackage[MAX_PATH];
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
     
-    // Ensure we have an absolute path. zoptions may return "\SAVES\" which is relative to game root.
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
-      _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
-    } else {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
-      _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
-    }
+    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveRoot, slotName );
+    _snprintf_s( syncDirectory, sizeof(syncDirectory), _TRUNCATE, "%s\\save-sync", saveRoot );
     
     _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\pending", syncDirectory );
     _snprintf_s( target, sizeof(target), _TRUNCATE, "%s\\%s.gss", root, slotName );
@@ -457,21 +467,17 @@ namespace SaveSync {
   }
 
   bool InstallPendingPackage( const char* slotName, int slotID, const char* source ) {
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) )
+      return false;
     char sourceDir[MAX_PATH];
     char root[MAX_PATH];
     char pending[MAX_PATH];
     char staging[MAX_PATH];
     char backupRoot[MAX_PATH];
     char backup[MAX_PATH];
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( sourceDir, sizeof(sourceDir), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
-      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
-    } else {
-      _snprintf_s( sourceDir, sizeof(sourceDir), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
-      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
-    }
+    _snprintf_s( sourceDir, sizeof(sourceDir), _TRUNCATE, "%s\\%s", saveRoot, slotName );
+    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveRoot );
     _snprintf_s( pending, sizeof(pending), _TRUNCATE, "%s\\pending\\%s.gss", root, slotName );
     _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s\\pending\\%s.unpack", root, slotName );
     _snprintf_s( backupRoot, sizeof(backupRoot), _TRUNCATE, "%s\\backup", root );
@@ -493,7 +499,6 @@ namespace SaveSync {
     }
 
     if( GetFileAttributesA( sourceDir ) != INVALID_FILE_ATTRIBUTES ) {
-      SyncHistory::RecordEntry( slotName, slotID, source ? source : "desconocido", "" );
       if( !ReplaceDirectory( sourceDir, backup ) )
       {
         RemoveDirectoryTree( staging );
@@ -505,6 +510,7 @@ namespace SaveSync {
     bool success = false;
     if( ReplaceDirectory( staging, sourceDir ) ) {
       success = true;
+      SyncHistory::RecordEntry( slotName, slotID, source ? source : "desconocido", "" );
       SyncLog::Write( "InstallPendingPackage: successfully installed '%s'", slotName );
     } else {
       if( GetFileAttributesA( backup ) != INVALID_FILE_ATTRIBUTES )
@@ -535,13 +541,15 @@ namespace SaveSync {
     int slotID = UnionCore::SaveLoadGameInfo.slotID;
     if( slotID < 0 )
       return false;
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) )
+      return false;
     char root[MAX_PATH];
     char source[MAX_PATH];
     char backup[MAX_PATH];
-    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveDirectory );
-    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveDirectory, slotName );
+    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveRoot );
+    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveRoot, slotName );
     _snprintf_s( backup, sizeof(backup), _TRUNCATE, "%s\\backup\\%s", root, slotName );
     if( GetFileAttributesA( backup ) == INVALID_FILE_ATTRIBUTES )
       return false;
@@ -561,30 +569,26 @@ namespace SaveSync {
     int slotID = UnionCore::SaveLoadGameInfo.slotID;
     if( slotID < 0 )
       return false;
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) )
+      return false;
     char path[MAX_PATH];
     _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\save-sync\\backup\\%s",
-      saveDirectory, slotName );
+      saveRoot, slotName );
     return GetFileAttributesA( path ) != INVALID_FILE_ATTRIBUTES;
   }
 
   int GetSaveSlotList( SaveSlotInfo* slots, int maxSlots ) {
-    if( !zoptions ) return 0;
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) ) return 0;
 
     int count = 0;
     for( int i = 0; i <= 20 && count < maxSlots; ++i ) {
       const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( i ).ToChar();
 
       char path[MAX_PATH];
-      if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' )
-        _snprintf_s( path, sizeof(path), _TRUNCATE, "%s%s%s",
-          gameDirectory.ToChar(), saveDirectory, slotName );
-      else
-        _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s\\%s",
-          gameDirectory.ToChar(), saveDirectory, slotName );
+      _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s", saveRoot, slotName );
 
       WIN32_FILE_ATTRIBUTE_DATA data;
       if( !GetFileAttributesExA( path, GetFileExInfoStandard, &data ) ||
@@ -611,20 +615,13 @@ namespace SaveSync {
   }
 
   bool PackSlotToFile( int slotID, const char* outputPath ) {
-    if( !zoptions ) return false;
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    char saveRoot[MAX_PATH];
+    if( !GetSaveRoot( saveRoot, sizeof(saveRoot) ) ) return false;
 
     char source[MAX_PATH];
     char staging[MAX_PATH];
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s",
-        gameDirectory.ToChar(), saveDirectory, slotName );
-    } else {
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s",
-        gameDirectory.ToChar(), saveDirectory, slotName );
-    }
+    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveRoot, slotName );
 
     _snprintf_s( staging, sizeof(staging), _TRUNCATE, "%s.lansync", source );
 

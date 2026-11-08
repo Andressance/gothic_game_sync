@@ -5,7 +5,8 @@
 
 namespace RemoteSync {
   void Start();
-  void UploadSave( const char* saveID, const char* packagePath );
+  // force = true skips the X-Base-Epoch check (manual uploads that overwrite the server).
+  void UploadSave( const char* saveID, const char* packagePath, bool force = false );
   void PollUi();
   void OpenDeveloperPanel();
   void DownloadLatest();
@@ -19,7 +20,7 @@ namespace RemoteSync {
   // background).  Sets NeedsSavegameRefresh when done.
   void DownloadSlotBySaveID( const char* saveID );
 
-  // Fetch /saves/slots JSON from the server and populate the remote slot
+  // Fetch /saves JSON from the server and populate the remote slot
   // list.  Returns the number of remote entries read.
   struct RemoteSlotInfo {
     char saveID[128];

@@ -57,11 +57,23 @@ Se puede cambiar la ruta:
 $env:GOTHICSAVE_STORAGE = "D:\GothicSaveSyncStorage"
 ```
 
+## Autenticación
+
+Todas las rutas requieren la cabecera `X-API-Key` con el valor de la variable
+`GOTHICSAVE_API_TOKEN`. Excepción: `/health` es público.
+
+```text
+GOTHICSAVE_API_TOKEN=<token-largo-y-aleatorio>
+```
+
+Si la variable está vacía o no existe, la autenticación se desactiva y el
+servidor muestra un aviso al arrancar. Úsalo así solo en desarrollo.
+
 ## Endpoints
 
 | Método | Ruta | Uso |
 | --- | --- | --- |
-| `GET` | `/health` | Comprobar que el servicio está activo |
+| `GET` | `/health` | Comprobar que el servicio está activo (público, sin API key) |
 | `GET` | `/status` | Comprobar que el servicio y su almacenamiento están disponibles |
 | `POST` | `/saves/{save_id}` | Subir o reemplazar un `.gss` como multipart `save` |
 | `GET` | `/saves` | Listar partidas disponibles, ordenadas por `uploaded_at` descendente |
@@ -73,13 +85,30 @@ Ejemplo de subida:
 
 ```powershell
 curl.exe -X POST http://127.0.0.1:8000/saves/savegame1 `
+	-H "X-API-Key: $env:GOTHICSAVE_API_TOKEN" `
 	-F "save=@.\savegame1.gss"
 ```
 
 Ejemplo de descarga:
 
 ```powershell
-curl.exe -o savegame1.gss http://127.0.0.1:8000/saves/savegame1/download
+curl.exe -H "X-API-Key: $env:GOTHICSAVE_API_TOKEN" `
+	-o savegame1.gss http://127.0.0.1:8000/saves/savegame1/download
 ```
 
-La API valida el identificador, la extensión y la cabecera `GSSPKG1` del paquete. El límite inicial es de 128 MiB por archivo. `uploaded_at` representa la última modificación remota del slot. Render proporciona TLS en el dominio del servicio.
+### Control de conflictos
+
+La subida puede incluir la cabecera opcional `X-Base-Epoch` con el valor
+`uploaded_at_epoch` que el cliente tenía al descargar la partida. Si la partida
+remota es más reciente que ese valor, el servidor responde `409 Conflict` con
+`Remote save is newer.` y no sobrescribe nada. Sin la cabecera no se comprueba
+nada y la subida sobrescribe la partida. Un valor que no es entero responde `400`.
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/saves/savegame1 `
+	-H "X-API-Key: $env:GOTHICSAVE_API_TOKEN" `
+	-H "X-Base-Epoch: 1767225600" `
+	-F "save=@.\savegame1.gss"
+```
+
+La API valida el identificador, la extensión y la cabecera `GSSPKG1` del paquete. El límite por defecto es de 64 MiB por archivo; se puede cambiar con `GOTHICSAVE_MAX_MB`. `uploaded_at` representa la última modificación remota del slot. Render proporciona TLS en el dominio del servicio.

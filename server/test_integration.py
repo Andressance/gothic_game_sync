@@ -101,7 +101,11 @@ def base_url():
 @pytest.fixture(scope="session")
 def http():
     import httpx
-    with httpx.Client(timeout=15.0) as client:
+    headers = {}
+    token = os.getenv("GOTHICSAVE_API_TOKEN")
+    if token:
+        headers["X-API-Key"] = token
+    with httpx.Client(timeout=15.0, headers=headers) as client:
         yield client
 
 

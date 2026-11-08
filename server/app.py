@@ -1,12 +1,17 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
+import secrets
+import shutil
+import tempfile
+import uuid
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -14,7 +19,7 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).with_name(".env"))
 
 PACKAGE_MAGIC = b"GSSPKG1"
-MAX_PACKAGE_SIZE = 128 * 1024 * 1024
+MAX_PACKAGE_SIZE = int(os.getenv("GOTHICSAVE_MAX_MB", "64")) * 1024 * 1024
 SAVE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 STORAGE_DIR = Path(os.getenv("GOTHICSAVE_STORAGE", "storage"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -24,6 +29,8 @@ USE_SUPABASE = (
     SUPABASE_URL.startswith(("https://", "http://"))
     and bool(SUPABASE_SERVICE_ROLE_KEY)
 )
+# Shared HTTP client, created in lifespan(). None outside the app lifecycle.
+client: httpx.AsyncClient | None = None
 
 
 class SaveInfo(BaseModel):
@@ -34,11 +41,33 @@ class SaveInfo(BaseModel):
     uploaded_at_epoch: int = 0
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global client
+    if not USE_SUPABASE:
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    if not os.getenv("GOTHICSAVE_API_TOKEN"):
+        print("WARNING: GOTHICSAVE_API_TOKEN is not set; API authentication is disabled.")
+    client = httpx.AsyncClient(timeout=30.0)
+    yield
+    await client.aclose()
+    client = None
+
+
 app = FastAPI(
     title="GothicSaveSync API",
     version="0.2.0",
     description="Upload, list and download GothicSaveSync .gss save packages.",
+    lifespan=lifespan,
 )
+
+
+async def require_token(x_api_key: str = Header(default="")) -> None:
+    expected = os.getenv("GOTHICSAVE_API_TOKEN", "")
+    if not expected:
+        return
+    if not secrets.compare_digest(x_api_key.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
 
 def validate_save_id(save_id: str) -> None:
@@ -92,10 +121,15 @@ async def supabase_request(
     if headers:
         request_headers.update(headers)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        if client is not None:
             response = await client.request(
                 method, url, content=content, params=params, headers=request_headers
             )
+        else:
+            async with httpx.AsyncClient(timeout=30.0) as temporary:
+                response = await temporary.request(
+                    method, url, content=content, params=params, headers=request_headers
+                )
     except httpx.RequestError as error:
         print(f"Supabase request error: {error}")
         raise HTTPException(status_code=502, detail="Supabase is unreachable.") from error
@@ -105,18 +139,25 @@ async def supabase_request(
     return response
 
 
-async def read_upload(save: UploadFile) -> bytes:
+async def read_upload(save: UploadFile) -> tuple[tempfile.SpooledTemporaryFile, int]:
+    spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
     try:
-        package = bytearray()
+        size = 0
         while chunk := await save.read(1024 * 1024):
-            package.extend(chunk)
-            if len(package) > MAX_PACKAGE_SIZE:
+            size += len(chunk)
+            if size > MAX_PACKAGE_SIZE:
                 raise HTTPException(status_code=413, detail="The save package is too large.")
+            spool.write(chunk)
+        spool.seek(0)
+        if size < len(PACKAGE_MAGIC) or spool.read(len(PACKAGE_MAGIC)) != PACKAGE_MAGIC:
+            raise HTTPException(status_code=400, detail="The file is not a GothicSaveSync package.")
+        spool.seek(0)
+    except BaseException:
+        spool.close()
+        raise
     finally:
         await save.close()
-    if len(package) < len(PACKAGE_MAGIC) or package[: len(PACKAGE_MAGIC)] != PACKAGE_MAGIC:
-        raise HTTPException(status_code=400, detail="The file is not a GothicSaveSync package.")
-    return bytes(package)
+    return spool, size
 
 
 def save_info_from_row(row: dict[str, object]) -> SaveInfo:
@@ -142,40 +183,63 @@ async def supabase_save_info(save_id: str) -> SaveInfo:
     return save_info_from_row(rows[0])
 
 
-@app.on_event("startup")
-async def create_storage_directory() -> None:
-    if not USE_SUPABASE:
-        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/saves/{save_id}", response_model=SaveInfo, status_code=status.HTTP_201_CREATED)
-async def upload_save(save_id: str, save: UploadFile = File(...)) -> SaveInfo:
+@app.post(
+    "/saves/{save_id}",
+    response_model=SaveInfo,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_token)],
+)
+async def upload_save(
+    save_id: str,
+    save: UploadFile = File(...),
+    x_base_epoch: str | None = Header(default=None),
+) -> SaveInfo:
     validate_save_id(save_id)
     if not save.filename or not save.filename.lower().endswith(".gss"):
         raise HTTPException(status_code=400, detail="The uploaded file must use the .gss extension.")
-    package = await read_upload(save)
-    uploaded_at = datetime.now(timezone.utc)
-    info = SaveInfo(
-        save_id=save_id,
-        filename=f"{save_id}.gss",
-        size=len(package),
-        uploaded_at=uploaded_at,
-        uploaded_at_epoch=int(uploaded_at.timestamp()),
-    )
 
-    if USE_SUPABASE:
-        await supabase_request(
-            "POST",
-            object_url(save_id),
-            content=package,
-            headers={"Content-Type": "application/octet-stream", "x-upsert": "true"},
-        )
+    if x_base_epoch is not None:
         try:
+            base_epoch = int(x_base_epoch)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="X-Base-Epoch must be an integer.") from error
+        # shortcut: check-then-write is not atomic, fine for a few users
+        existing: SaveInfo | None = None
+        if USE_SUPABASE:
+            try:
+                existing = await supabase_save_info(save_id)
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
+        elif metadata_path(save_id).is_file():
+            existing = read_metadata(save_id)
+        if existing is not None and existing.uploaded_at_epoch > base_epoch:
+            raise HTTPException(status_code=409, detail="Remote save is newer.")
+
+    spool, size = await read_upload(save)
+    try:
+        uploaded_at = datetime.now(timezone.utc)
+        info = SaveInfo(
+            save_id=save_id,
+            filename=f"{save_id}.gss",
+            size=size,
+            uploaded_at=uploaded_at,
+            uploaded_at_epoch=int(uploaded_at.timestamp()),
+        )
+
+        if USE_SUPABASE:
+            await supabase_request(
+                "POST",
+                object_url(save_id),
+                content=spool.read(),
+                headers={"Content-Type": "application/octet-stream", "x-upsert": "true"},
+            )
+            # No rollback on DB failure: the upsert already replaced the old object, deleting it would lose the save.
             db_payload = info.model_dump(mode="json")
             db_payload.pop("uploaded_at_epoch", None)
             await supabase_request(
@@ -187,20 +251,22 @@ async def upload_save(save_id: str, save: UploadFile = File(...)) -> SaveInfo:
                 }).encode(),
                 headers={"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
             )
-        except HTTPException:
-            await supabase_request("DELETE", object_url(save_id))
-            raise
+            return info
+
+        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = STORAGE_DIR / f"{save_id}.{uuid.uuid4().hex}.uploading"
+        with temporary.open("wb") as target:
+            shutil.copyfileobj(spool, target)
+        os.replace(temporary, package_path(save_id))
+        temporary_metadata = STORAGE_DIR / f"{save_id}.{uuid.uuid4().hex}.json.tmp"
+        temporary_metadata.write_text(info.model_dump_json(), encoding="utf-8")
+        os.replace(temporary_metadata, metadata_path(save_id))
         return info
-
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    temporary = package_path(save_id).with_suffix(".uploading")
-    temporary.write_bytes(package)
-    os.replace(temporary, package_path(save_id))
-    metadata_path(save_id).write_text(info.model_dump_json(), encoding="utf-8")
-    return info
+    finally:
+        spool.close()
 
 
-@app.get("/saves", response_model=list[SaveInfo])
+@app.get("/saves", response_model=list[SaveInfo], dependencies=[Depends(require_token)])
 async def list_saves() -> list[SaveInfo]:
     if USE_SUPABASE:
         response = await supabase_request(
@@ -208,14 +274,7 @@ async def list_saves() -> list[SaveInfo]:
             database_url(),
             params={"select": "*", "order": "uploaded_at.desc"},
         )
-        all_saves = [save_info_from_row(row) for row in response.json()]
-        seen = set()
-        deduped = []
-        for save in all_saves:
-            if save.save_id not in seen:
-                seen.add(save.save_id)
-                deduped.append(save)
-        return deduped
+        return [save_info_from_row(row) for row in response.json()]
 
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     saves = []
@@ -227,7 +286,11 @@ async def list_saves() -> list[SaveInfo]:
     return sorted(saves, key=lambda save: save.uploaded_at, reverse=True)
 
 
-@app.get("/saves/{save_id}", response_model=SaveInfo)
+@app.get(
+    "/saves/{save_id}",
+    response_model=SaveInfo,
+    dependencies=[Depends(require_token)],
+)
 async def get_save_info(save_id: str) -> SaveInfo:
     validate_save_id(save_id)
     if USE_SUPABASE:
@@ -237,7 +300,11 @@ async def get_save_info(save_id: str) -> SaveInfo:
     return read_metadata(save_id)
 
 
-@app.get("/saves/{save_id}/download", response_model=None)
+@app.get(
+    "/saves/{save_id}/download",
+    response_model=None,
+    dependencies=[Depends(require_token)],
+)
 async def download_save(save_id: str) -> Response | FileResponse:
     validate_save_id(save_id)
     if USE_SUPABASE:
@@ -253,7 +320,11 @@ async def download_save(save_id: str) -> Response | FileResponse:
     return FileResponse(destination, media_type="application/octet-stream", filename=f"{save_id}.gss")
 
 
-@app.delete("/saves/{save_id}", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete(
+    "/saves/{save_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_token)],
+)
 async def delete_save(save_id: str) -> None:
     validate_save_id(save_id)
     if USE_SUPABASE:
@@ -266,28 +337,7 @@ async def delete_save(save_id: str) -> None:
     metadata_path(save_id).unlink(missing_ok=True)
 
 
-@app.get("/saves/slots")
-async def list_save_slots() -> dict[str, list[dict[str, object]]]:
-    """Return all remote saves as a structured JSON suitable for the manual
-    management UI.  Each entry includes save_id, filename, size,
-    uploaded_at_epoch and a human-readable date string."""
-    raw_saves = await list_saves()
-    remote_slots: list[dict[str, object]] = []
-    for save in raw_saves:
-        dt = save.uploaded_at
-        remote_slots.append(
-            {
-                "save_id": save.save_id,
-                "filename": save.filename,
-                "size": save.size,
-                "uploaded_at_epoch": save.uploaded_at_epoch,
-                "date_str": dt.strftime("%d/%m/%Y %H:%M"),
-            }
-        )
-    return {"remote_saves": remote_slots}
-
-
-@app.get("/status")
+@app.get("/status", dependencies=[Depends(require_token)])
 async def service_status() -> dict[str, str]:
     if not USE_SUPABASE:
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
