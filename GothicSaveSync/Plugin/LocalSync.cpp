@@ -17,7 +17,6 @@
 
 #include "LocalSync.h"
 #include "SaveSync.h"
-#include "SyncHistory.h"
 #include "SyncLog.h"
 #include "plugin.h"
 #include "UnionAfx.h"
@@ -33,6 +32,7 @@ namespace {
   static const unsigned short UdpPort           = 19216;
   static const unsigned short TcpPort           = 19217;
   static const int            MaxSlots          = 20;
+  static const int            MaxSlotID         = 20;
   static const unsigned int   BroadcastInterval = 2000;   // ms
   static const unsigned int   SelectTimeout     = 500;    // ms
   static const char           DiscoverMagic[]   = "GSS_DISCOVER";
@@ -75,6 +75,8 @@ namespace {
   volatile bool TransferOk    = false;
   volatile bool StopFlag      = false;
   volatile bool NeedsRefresh  = false;
+  volatile int  ExpectedRecvSlot   = -1;     // slot we asked for; -1 when no pull is in flight
+  volatile bool ProtocolViolation  = false;  // set when the stream can no longer be trusted
 
   HANDLE hDiscoveryThread   = 0;
   HANDLE hConnectionThread  = 0;
@@ -253,36 +255,44 @@ namespace {
   // ---- save transfer helpers --------------------------------------------
 
   // Receive a MSG_SAVE_DATA payload, install the package, return success.
+  // Sets ProtocolViolation when the payload cannot be consumed safely; the caller must close the link.
   bool HandleReceiveSave( SOCKET s, unsigned int payloadSize ) {
-    if( payloadSize < 12 || payloadSize > MaxTransferSize ) return false;
+    if( payloadSize < 12 || payloadSize > MaxTransferSize ) {
+      ProtocolViolation = true;
+      return false;
+    }
 
     int slotID = 0;
     unsigned __int64 fileSize = 0;
     if( !RecvAll( s, &slotID, 4 ) ) return false;
     if( !RecvAll( s, &fileSize, 8 ) ) return false;
 
+    if( slotID != ExpectedRecvSlot || slotID < 0 || slotID > MaxSlotID ) {
+      SyncLog::Write( "LocalSync: payload for slot %d rejected (expected %d)", slotID, (int)ExpectedRecvSlot );
+      ProtocolViolation = true;
+      return false;
+    }
+
     unsigned int dataSize = payloadSize - 12;
-    if( (unsigned __int64)dataSize != fileSize || dataSize > MaxTransferSize ) return false;
+    if( (unsigned __int64)dataSize != fileSize || dataSize > MaxTransferSize ) {
+      ProtocolViolation = true;
+      return false;
+    }
 
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    Common::string gameDir = UnionCore::Union.GetGameDirectory();
-    const char* saveDir = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+
+    char root[MAX_PATH];
+    if( !SaveSync::GetSaveRoot( root, sizeof(root) ) ) {
+      ProtocolViolation = true; // payload not consumed yet, the stream cannot continue
+      return false;
+    }
 
     char syncDir[MAX_PATH];
     char pendingDir[MAX_PATH];
     char targetPath[MAX_PATH];
     char tempPath[MAX_PATH];
-    if( saveDir[0] == '\\' || saveDir[0] == '/' ) {
-      _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s%ssave-sync",
-        gameDir.ToChar(), saveDir );
-      _snprintf_s( pendingDir, sizeof(pendingDir), _TRUNCATE, "%s%ssave-sync\\pending",
-        gameDir.ToChar(), saveDir );
-    } else {
-      _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s\\%s\\save-sync",
-        gameDir.ToChar(), saveDir );
-      _snprintf_s( pendingDir, sizeof(pendingDir), _TRUNCATE, "%s\\%s\\save-sync\\pending",
-        gameDir.ToChar(), saveDir );
-    }
+    _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s\\save-sync", root );
+    _snprintf_s( pendingDir, sizeof(pendingDir), _TRUNCATE, "%s\\pending", syncDir );
     CreateDirectoryA( syncDir, 0 );
     CreateDirectoryA( pendingDir, 0 );
     _snprintf_s( targetPath, sizeof(targetPath), _TRUNCATE, "%s\\%s.gss", pendingDir, slotName );
@@ -308,9 +318,11 @@ namespace {
       return false;
     }
 
-    SyncHistory::RecordEntry( slotName, slotID, "lan", PeerNameBuf );
-
-    MoveFileExA( tempPath, targetPath, MOVEFILE_REPLACE_EXISTING );
+    if( !MoveFileExA( tempPath, targetPath, MOVEFILE_REPLACE_EXISTING ) ) {
+      SyncLog::Write( "LocalSync: MoveFileEx failed (err=%lu)", GetLastError() );
+      DeleteFileA( tempPath );
+      return false;
+    }
 
     bool installed = SaveSync::InstallPendingPackage( slotName, slotID, "lan" );
     SyncLog::Write( "LocalSync: received slot %d (%s) -> installed=%d", slotID, slotName, installed );
@@ -324,18 +336,21 @@ namespace {
 
   // Package a slot and send it over TCP.
   bool HandleSendRequest( SOCKET s, int slotID ) {
-    Common::string gameDir = UnionCore::Union.GetGameDirectory();
-    const char* saveDir = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    if( slotID < 0 || slotID > MaxSlotID ) {
+      SyncLog::Write( "LocalSync: refused out-of-range slot %d", slotID );
+      SendMsg( s, MSG_NACK, 0, 0 );
+      return false;
+    }
+
+    char root[MAX_PATH];
+    if( !SaveSync::GetSaveRoot( root, sizeof(root) ) ) {
+      SendMsg( s, MSG_NACK, 0, 0 );
+      return false;
+    }
 
     char syncDir[MAX_PATH];
     char tempPath[MAX_PATH];
-    if( saveDir[0] == '\\' || saveDir[0] == '/' ) {
-      _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s%ssave-sync",
-        gameDir.ToChar(), saveDir );
-    } else {
-      _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s\\%s\\save-sync",
-        gameDir.ToChar(), saveDir );
-    }
+    _snprintf_s( syncDir, sizeof(syncDir), _TRUNCATE, "%s\\save-sync", root );
     CreateDirectoryA( syncDir, 0 );
     _snprintf_s( tempPath, sizeof(tempPath), _TRUNCATE, "%s\\lansend.gss", syncDir );
 
@@ -405,6 +420,7 @@ namespace {
   }
 
   // ---- connection thread ------------------------------------------------
+  // shortcut: no pairing code, the first LAN host that connects is trusted and may pull any slot; add a pairing code if used on shared networks.
 
   DWORD WINAPI ConnectionThreadProc( void* arg ) {
     SOCKET s = (SOCKET)(UINT_PTR)arg;
@@ -418,17 +434,22 @@ namespace {
       return 0;
     }
 
+    char remoteName[64] = {};
     MsgHeader hdr;
-    if( !RecvHeader( s, hdr ) || hdr.type != MSG_HANDSHAKE || hdr.payloadSize > 64 ) {
+    if( !RecvHeader( s, hdr ) || hdr.type != MSG_HANDSHAKE || hdr.payloadSize >= sizeof(remoteName) ) {
       SetStatus( "Error en handshake remoto" );
       SetState( LocalSync::STATE_ERROR );
       closesocket( s );
       return 0;
     }
 
-    char remoteName[64] = {};
-    if( hdr.payloadSize > 0 )
-      RecvAll( s, remoteName, (int)hdr.payloadSize );
+    if( hdr.payloadSize > 0 && !RecvAll( s, remoteName, (int)hdr.payloadSize ) ) {
+      SetStatus( "Error en handshake remoto" );
+      SetState( LocalSync::STATE_ERROR );
+      closesocket( s );
+      return 0;
+    }
+    remoteName[sizeof(remoteName) - 1] = 0;
 
     EnterCriticalSection( &SyncLock );
     strcpy_s( PeerNameBuf, remoteName );
@@ -473,6 +494,7 @@ namespace {
       if( recvReq >= 0 ) {
         SetState( LocalSync::STATE_TRANSFERRING );
         SetStatus( "Solicitando partida..." );
+        ExpectedRecvSlot = recvReq;
         bool ok = SendMsg( s, MSG_REQUEST_SAVE, &recvReq, 4 );
         if( ok ) {
           MsgHeader resp;
@@ -483,6 +505,13 @@ namespace {
           } else {
             ok = false;
           }
+        }
+        ExpectedRecvSlot = -1;
+
+        if( ProtocolViolation ) {
+          SetStatus( "Error de protocolo en la transferencia" );
+          SetState( LocalSync::STATE_ERROR );
+          break;
         }
         if( ok ) ReExchangeSlots( s );
         TransferOk   = ok;
@@ -514,19 +543,22 @@ namespace {
             int reqSlotID = 0;
             if( inc.payloadSize == 4 && RecvAll( s, &reqSlotID, 4 ) ) {
               SyncLog::Write( "LocalSync: peer requested slot %d", reqSlotID );
-              HandleSendRequest( s, reqSlotID );
-              MsgHeader ack;
-              RecvHeader( s, ack ); // ACK/NACK from receiver
-              ReExchangeSlots( s );
+              // HandleSendRequest answers NACK itself (bad slot, pack failure); then no ACK follows.
+              if( HandleSendRequest( s, reqSlotID ) ) {
+                MsgHeader ack;
+                RecvHeader( s, ack ); // ACK/NACK from receiver
+                ReExchangeSlots( s );
+              }
             }
             break;
           }
 
           case MSG_SAVE_DATA: {
-            SyncLog::Write( "LocalSync: receiving save from peer" );
-            bool ok = HandleReceiveSave( s, inc.payloadSize );
-            SendMsg( s, ok ? MSG_ACK : MSG_NACK, 0, 0 );
-            if( ok ) ReExchangeSlots( s );
+            // Unrequested push: never read the payload, the link is closed below.
+            SyncLog::Write( "LocalSync: unsolicited save payload (%u bytes) rejected", inc.payloadSize );
+            SetStatus( "Paquete no solicitado rechazado" );
+            SetState( LocalSync::STATE_ERROR );
+            ProtocolViolation = true;
             break;
           }
 
@@ -554,6 +586,8 @@ namespace {
             break;
           }
         }
+
+        if( ProtocolViolation ) break;
       }
     }
 
@@ -781,6 +815,7 @@ namespace LocalSync {
     TransferOk    = false;
     PendingSend   = -1;
     PendingRecv   = -1;
+    ProtocolViolation = false;
     RemoteSlotCount = 0;
 
     RefreshLocalSlots();

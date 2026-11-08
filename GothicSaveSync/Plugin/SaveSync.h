@@ -1,6 +1,8 @@
 #ifndef __SAVE_SYNC_H__
 #define __SAVE_SYNC_H__
 
+#include <stddef.h>
+
 namespace SaveSync {
   struct SaveSlotInfo {
     int slotID;
@@ -23,6 +25,7 @@ namespace SaveSync {
   bool EnsureParentDirectories( const char* path );
   bool CopyDirectory( const char* source, const char* target );
   bool RemoveDirectoryTree( const char* path );
+  bool GetSaveRoot( char* out, size_t outSize );
 }
 
 #endif

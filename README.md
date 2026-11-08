@@ -45,7 +45,10 @@ GothicSaveSync reads its configuration from the native `Gothic.ini` file. Add th
 ```ini
 [GOTHICSAVESYNC]
 ServerURL=https://your-service-url.onrender.com
+ApiToken=the-same-value-as-GOTHICSAVE_API_TOKEN-on-the-server
 ```
+
+`ApiToken` is sent as the `X-API-Key` header and only over `https://`. It is a shared secret you invent, **not** the Supabase service key.
 
 ### 2. Plugin Installation
 In a standard Steam installation, place the compiled DLL into the `Autorun` directory:
@@ -73,7 +76,9 @@ See [server/README.md](server/README.md) for dedicated backend documentation.
 
 ## Security & Antivirus
 
-GothicSaveSync uses native Windows APIs (`WinHTTP`) to perform network requests. It operates strictly within the boundaries of the configured `ServerURL` and does not open listening ports.
+GothicSaveSync uses native Windows APIs (`WinHTTP`) to perform network requests to the configured `ServerURL`. The server requires the `ApiToken` for every route except `/health`.
+
+LAN sync (opened from the F10 menu) listens on UDP `19216` and TCP `19217` only while the LAN overlay is open. It rejects saves you did not request, but it has no pairing code: the first device on the network that connects is trusted. Do not use LAN sync on shared or public networks.
 
 Because this is an unsigned injected DLL that performs network I/O and disk operations, some strict antivirus heuristics (or Windows SmartScreen) may flag it as a false positive. 
 To minimize risk:
@@ -111,7 +116,7 @@ msbuild GothicSaveSync/GothicSaveSync.vcxproj /p:Configuration="G2A Release" /p:
 - **Remote Server Synchronization [Completed]**: Fully automated background synchronization using a dedicated FastAPI/Supabase backend.
 - **Local Network Sync (LAN) [Completed]**: Direct peer-to-peer synchronization across local networks. Devices will be able to auto-discover each other and synchronize the latest saves without relying on an external server.
 - **Cloud Provider Integrations [Planned]**: Direct integration with popular cloud storage APIs (Google Drive, Dropbox, OneDrive) to bypass the need for hosting a custom backend server.
-- **Native UI & Manual Management [Completed]**: Overhaul the synchronization interface using native Gothic menu elements (`zCView`), allowing for manual per-slot management, explicit conflict resolution, and granular control over what gets uploaded or downloaded.
+- **Native UI & Manual Management [Completed]**: Overhaul the synchronization interface using native Gothic menu elements (`zCView`), allowing for manual per-slot management and granular control over what gets uploaded or downloaded. Automatic uploads are refused (HTTP 409) when the server holds a newer save; the manual upload overrides it.
 
 ## License
 

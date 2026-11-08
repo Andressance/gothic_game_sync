@@ -33,6 +33,7 @@ namespace {
     char saveID[MAX_PATH];
     char packagePath[MAX_PATH];
     char serverUrl[1024];
+    bool force;
   };
 
   struct RemoteSave {
@@ -40,16 +41,33 @@ namespace {
     __int64 uploadedAt;
   };
 
+  struct DownloadSlotJob {
+    char serverUrl[1024];
+    RemoteSave save;
+  };
+
   RemoteSave RemoteSaves[32] = {};
   unsigned int RemoteSaveCount = 0;
+  // Guards RemoteSaves/RemoteSaveCount. Initialised in RemoteSync::Start() and
+  // intentionally never deleted: it lives for the whole process.
+  CRITICAL_SECTION RemoteLock;
+  // Uploads run one at a time so each reads the base epoch the previous one produced
+  // (two quick saves would otherwise send a stale epoch and get a false 409).
+  CRITICAL_SECTION UploadLock;
+  struct UploadGuard {
+    UploadGuard() { EnterCriticalSection( &UploadLock ); }
+    ~UploadGuard() { LeaveCriticalSection( &UploadLock ); }
+  };
   bool RemotePromptShown = false;
   bool RemoteSavesChecked = false;
   bool RemoteDownloadStarted = false;
   bool NeedsSavegameRefresh = false;
   bool DeveloperPanelOpen = false;
   LONG ServerStatus = 0;
+  LONG ConflictDetected = 0;
   bool ServerStatusShown = false;
   char ConfiguredServerUrl[1024] = {};
+  char ConfiguredApiToken[256] = {};
 
   // State machine for async UI interactions.
   // PollUi goes through these states instead of blocking with MessageBox.
@@ -81,6 +99,20 @@ namespace {
 
     strcpy_s( result, resultSize, value.ToChar() );
     SyncLog::Write( "ReadServerUrl: '%s'", result );
+    return result[0] != 0;
+  }
+
+  // Same source as ReadServerUrl, but the value is never logged.
+  bool ReadApiToken( char* result, size_t resultSize ) {
+    if( !zoptions )
+      return false;
+
+    zSTRING section( "GOTHICSAVESYNC" );
+    zSTRING value = zoptions->ReadString( section, "ApiToken", "" );
+    if( value.IsEmpty() )
+      return false;
+
+    strcpy_s( result, resultSize, value.ToChar() );
     return result[0] != 0;
   }
 
@@ -120,8 +152,33 @@ namespace {
     if( !request ) {
       WinHttpCloseHandle( session );
       session = 0;
+      return 0;
+    }
+    // The API token is only sent over TLS so it never travels in clear text.
+    if( request && ConfiguredApiToken[0] != 0 ) {
+      if( !url.secure ) {
+        SyncLog::Write( "ApiToken ignored: ServerURL is not https" );
+      } else {
+        wchar_t token[256];
+        wchar_t header[320];
+        MultiByteToWideChar( CP_UTF8, 0, ConfiguredApiToken, -1, token, _countof(token) );
+        _snwprintf_s( header, _countof(header), _TRUNCATE, L"X-API-Key: %s", token );
+        WinHttpAddRequestHeaders( request, header, (DWORD)-1L,
+          WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE );
+      }
     }
     return request;
+  }
+
+  DWORD QueryStatusCode( HINTERNET request ) {
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if( !WinHttpQueryHeaders( request,
+          WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+          WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize,
+          WINHTTP_NO_HEADER_INDEX ) )
+      return 0;
+    return statusCode;
   }
 
   bool ReadResponse( HINTERNET request, const char* path ) {
@@ -147,17 +204,21 @@ namespace {
     return result;
   }
 
+  // Directory holding local pending packages, e.g. <saves>\save-sync\pending.
+  bool PendingDirectory( char* out, size_t outSize ) {
+    char root[MAX_PATH];
+    if( !SaveSync::GetSaveRoot( root, sizeof(root) ) )
+      return false;
+    _snprintf_s( out, outSize, _TRUNCATE, "%s\\save-sync\\pending", root );
+    return true;
+  }
+
   __int64 LocalPackageTime( const char* saveID ) {
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
+    char directory[MAX_PATH];
+    if( !PendingDirectory( directory, sizeof(directory) ) )
+      return 0;
     char path[MAX_PATH];
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( path, sizeof(path), _TRUNCATE, "%s%ssave-sync\\pending\\%s.gss",
-        gameDirectory.ToChar(), saveDirectory, saveID );
-    } else {
-      _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s\\save-sync\\pending\\%s.gss",
-        gameDirectory.ToChar(), saveDirectory, saveID );
-    }
+    _snprintf_s( path, sizeof(path), _TRUNCATE, "%s\\%s.gss", directory, saveID );
     WIN32_FILE_ATTRIBUTE_DATA data;
     if( !GetFileAttributesExA( path, GetFileExInfoStandard, &data ) )
       return 0;
@@ -192,9 +253,11 @@ namespace {
     json[length] = 0;
     fclose( file );
 
-    RemoteSaveCount = 0;
+    // Parse into a local array so readers never see a half-written list.
+    RemoteSave parsed[_countof(RemoteSaves)];
+    unsigned int count = 0;
     const char* cursor = json;
-    while( RemoteSaveCount < _countof(RemoteSaves) ) {
+    while( count < _countof(parsed) ) {
       const char* id = strstr( cursor, "\"save_id\":\"" );
       if( !id )
         break;
@@ -204,35 +267,69 @@ namespace {
       if( !end || !timestamp )
         break;
       size_t idLength = (size_t)(end - id);
-      if( idLength == 0 || idLength >= sizeof(RemoteSaves[0].saveID) )
+      if( idLength == 0 || idLength >= sizeof(parsed[0].saveID) )
         break;
-      memcpy( RemoteSaves[RemoteSaveCount].saveID, id, idLength );
-      RemoteSaves[RemoteSaveCount].saveID[idLength] = 0;
-      RemoteSaves[RemoteSaveCount].uploadedAt = _atoi64( timestamp + 20 );
+      memcpy( parsed[count].saveID, id, idLength );
+      parsed[count].saveID[idLength] = 0;
+      parsed[count].uploadedAt = _atoi64( timestamp + 20 );
       SyncLog::Write( "ReadRemoteSaves: [%u] id='%s' epoch=%lld",
-        RemoteSaveCount, RemoteSaves[RemoteSaveCount].saveID,
-        RemoteSaves[RemoteSaveCount].uploadedAt );
-      ++RemoteSaveCount;
+        count, parsed[count].saveID, parsed[count].uploadedAt );
+      ++count;
       cursor = end + 1;
     }
     delete[] json;
-    SyncLog::Write( "ReadRemoteSaves: found %u remote save(s)", RemoteSaveCount );
-    return RemoteSaveCount;
+
+    EnterCriticalSection( &RemoteLock );
+    memcpy( RemoteSaves, parsed, sizeof(RemoteSaves[0]) * count );
+    RemoteSaveCount = count;
+    LeaveCriticalSection( &RemoteLock );
+
+    SyncLog::Write( "ReadRemoteSaves: found %u remote save(s)", count );
+    return count;
+  }
+
+  // Copies the current list under the lock. Callers work on the copy.
+  unsigned int CopyRemoteSaves( RemoteSave* out ) {
+    EnterCriticalSection( &RemoteLock );
+    unsigned int count = RemoteSaveCount;
+    memcpy( out, RemoteSaves, sizeof(RemoteSaves[0]) * count );
+    LeaveCriticalSection( &RemoteLock );
+    return count;
+  }
+
+  // Records the epoch returned by a successful upload so the next upload of
+  // this save sends the right X-Base-Epoch.
+  void UpdateRemoteSave( const char* saveID, __int64 uploadedAt ) {
+    EnterCriticalSection( &RemoteLock );
+    unsigned int index = 0;
+    while( index < RemoteSaveCount && strcmp( RemoteSaves[index].saveID, saveID ) != 0 )
+      ++index;
+    if( index == RemoteSaveCount && RemoteSaveCount < _countof(RemoteSaves) ) {
+      strcpy_s( RemoteSaves[index].saveID, saveID );
+      ++RemoteSaveCount;
+    }
+    if( index < RemoteSaveCount )
+      RemoteSaves[index].uploadedAt = uploadedAt;
+    LeaveCriticalSection( &RemoteLock );
   }
 
   bool HasNewerRemoteSave() {
-    for( unsigned int index = 0; index < RemoteSaveCount; ++index )
-      if( RemoteSaves[index].uploadedAt > LocalPackageTime( RemoteSaves[index].saveID ) )
+    RemoteSave saves[_countof(RemoteSaves)];
+    unsigned int count = CopyRemoteSaves( saves );
+    for( unsigned int index = 0; index < count; ++index )
+      if( saves[index].uploadedAt > LocalPackageTime( saves[index].saveID ) )
         return true;
     return false;
   }
 
   unsigned int CountNewerRemoteSaves() {
-    unsigned int count = 0;
-    for( unsigned int index = 0; index < RemoteSaveCount; ++index )
-      if( RemoteSaves[index].uploadedAt > LocalPackageTime( RemoteSaves[index].saveID ) )
-        ++count;
-    return count;
+    RemoteSave saves[_countof(RemoteSaves)];
+    unsigned int count = CopyRemoteSaves( saves );
+    unsigned int newer = 0;
+    for( unsigned int index = 0; index < count; ++index )
+      if( saves[index].uploadedAt > LocalPackageTime( saves[index].saveID ) )
+        ++newer;
+    return newer;
   }
 
   void DownloadSave( const char* serverUrl, const RemoteSave& save ) {
@@ -252,28 +349,29 @@ namespace {
     bool sent = WinHttpSendRequest( request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
       WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
       WinHttpReceiveResponse( request, 0 );
-    if( sent ) {
-      Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-      const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
-      char directory[MAX_PATH];
-      char target[MAX_PATH];
-      if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-        _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s%ssave-sync\\pending",
-          gameDirectory.ToChar(), saveDirectory );
-      } else {
-        _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s\\%s\\save-sync\\pending",
-          gameDirectory.ToChar(), saveDirectory );
-      }
+    DWORD statusCode = sent ? QueryStatusCode( request ) : 0;
+    if( sent && statusCode != 200 )
+      SyncLog::Write( "DownloadSave: HTTP %u for '%s', pending package left untouched",
+        statusCode, save.saveID );
+    char directory[MAX_PATH];
+    if( statusCode == 200 && PendingDirectory( directory, sizeof(directory) ) ) {
       CreateDirectoryA( directory, 0 );
+      char target[MAX_PATH];
       _snprintf_s( target, sizeof(target), _TRUNCATE, "%s\\%s.gss",
         directory, save.saveID );
       char temporary[MAX_PATH];
       _snprintf_s( temporary, sizeof(temporary), _TRUNCATE, "%s.download",
         target );
-      if( ReadResponse( request, temporary ) ) {
-        MoveFileExA( temporary, target, MOVEFILE_REPLACE_EXISTING );
+      if( !ReadResponse( request, temporary ) ) {
+        SyncLog::Write( "DownloadSave: ReadResponse failed for '%s'", temporary );
+        DeleteFileA( temporary );
+      } else if( !MoveFileExA( temporary, target, MOVEFILE_REPLACE_EXISTING ) ) {
+        SyncLog::Write( "DownloadSave: MoveFileEx to '%s' failed (err=%u)",
+          target, GetLastError() );
+        DeleteFileA( temporary );
+      } else {
         SyncLog::Write( "DownloadSave: downloaded to '%s'", target );
-        
+
         int slotID = -1;
         for( int candidate = 0; candidate < 100; ++candidate ) {
           const char* name = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( candidate ).ToChar();
@@ -282,7 +380,7 @@ namespace {
             break;
           }
         }
-        
+
         SyncLog::Write( "DownloadSave: saveID='%s' resolved slotID=%d", save.saveID, slotID );
         if( slotID >= 0 ) {
           bool installed = SaveSync::InstallPendingPackage( save.saveID, slotID, "remoto" );
@@ -292,9 +390,6 @@ namespace {
         } else {
           SyncLog::Write( "DownloadSave: could not resolve slotID for '%s'", save.saveID );
         }
-      } else {
-        SyncLog::Write( "DownloadSave: ReadResponse failed for '%s'", temporary );
-        DeleteFileA( temporary );
       }
     }
     WinHttpCloseHandle( request );
@@ -303,10 +398,19 @@ namespace {
 
   DWORD WINAPI DownloadThread( void* argument ) {
     char* serverUrl = (char*)argument;
-    for( unsigned int index = 0; index < RemoteSaveCount; ++index )
-      if( RemoteSaves[index].uploadedAt > LocalPackageTime( RemoteSaves[index].saveID ) )
-        DownloadSave( serverUrl, RemoteSaves[index] );
+    RemoteSave saves[_countof(RemoteSaves)];
+    unsigned int count = CopyRemoteSaves( saves );
+    for( unsigned int index = 0; index < count; ++index )
+      if( saves[index].uploadedAt > LocalPackageTime( saves[index].saveID ) )
+        DownloadSave( serverUrl, saves[index] );
     delete[] serverUrl;
+    return 0;
+  }
+
+  DWORD WINAPI DownloadSlotThread( void* argument ) {
+    DownloadSlotJob* job = (DownloadSlotJob*)argument;
+    DownloadSave( job->serverUrl, job->save );
+    delete job;
     return 0;
   }
 
@@ -333,7 +437,10 @@ namespace {
       WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
       WinHttpReceiveResponse( request, 0 );
     SyncLog::Write( "FetchRemoteSaves: request sent=%d", sent ? 1 : 0 );
-    if( sent ) {
+    DWORD statusCode = sent ? QueryStatusCode( request ) : 0;
+    if( sent && statusCode != 200 )
+      SyncLog::Write( "FetchRemoteSaves: HTTP %u, remote.json not updated", statusCode );
+    if( statusCode == 200 ) {
       Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
       char directory[MAX_PATH];
       _snprintf_s( directory, sizeof(directory), _TRUNCATE, "%s\\save-sync",
@@ -349,41 +456,38 @@ namespace {
   }
 
   bool CheckServerStatus( const char* serverUrl ) {
-      SyncLog::Write( "CheckServerStatus: '%s'", serverUrl );
-      Url url;
-      if( !ParseUrl( serverUrl, url ) ) {
-        SyncLog::Write( "CheckServerStatus: ParseUrl failed" );
-        return false;
-      }
-
-      wchar_t path[1024];
-      _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/status", url.path );
-      wcscpy_s( url.path, path );
-      HINTERNET session = 0;
-      HINTERNET request = OpenRequest( url, L"GET", session );
-      if( !request ) {
-        SyncLog::Write( "CheckServerStatus: OpenRequest failed (err=%u)", GetLastError() );
-        return false;
-      }
-
-      bool result = WinHttpSendRequest( request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-        WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
-        WinHttpReceiveResponse( request, 0 );
-      if( result ) {
-        DWORD statusCode = 0;
-        DWORD statusCodeSize = sizeof(statusCode);
-        result = WinHttpQueryHeaders( request,
-          WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-          WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize,
-          WINHTTP_NO_HEADER_INDEX ) && statusCode == 200;
-        SyncLog::Write( "CheckServerStatus: HTTP %u -> %s", statusCode, result ? "OK" : "FAIL" );
-      } else {
-        SyncLog::Write( "CheckServerStatus: request failed (err=%u)", GetLastError() );
-      }
-      WinHttpCloseHandle( request );
-      WinHttpCloseHandle( session );
-      return result;
+    SyncLog::Write( "CheckServerStatus: '%s'", serverUrl );
+    Url url;
+    if( !ParseUrl( serverUrl, url ) ) {
+      SyncLog::Write( "CheckServerStatus: ParseUrl failed" );
+      return false;
     }
+
+    wchar_t path[1024];
+    _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/status", url.path );
+    wcscpy_s( url.path, path );
+    HINTERNET session = 0;
+    HINTERNET request = OpenRequest( url, L"GET", session );
+    if( !request ) {
+      SyncLog::Write( "CheckServerStatus: OpenRequest failed (err=%u)", GetLastError() );
+      return false;
+    }
+
+    bool result = WinHttpSendRequest( request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+      WINHTTP_NO_REQUEST_DATA, 0, 0, 0 ) &&
+      WinHttpReceiveResponse( request, 0 );
+    if( result ) {
+      DWORD statusCode = QueryStatusCode( request );
+      result = statusCode == 200;
+      SyncLog::Write( "CheckServerStatus: HTTP %u -> %s", statusCode, result ? "OK" : "FAIL" );
+    } else {
+      SyncLog::Write( "CheckServerStatus: request failed (err=%u)", GetLastError() );
+    }
+    WinHttpCloseHandle( request );
+    WinHttpCloseHandle( session );
+    return result;
+  }
+
   DWORD WINAPI StartupThread( void* argument ) {
     char* serverUrl = (char*)argument;
     SyncLog::Write( "StartupThread: begin" );
@@ -399,8 +503,27 @@ namespace {
     return 0;
   }
 
+  // The 201 body is small JSON; read it with a hard cap.
+  __int64 ReadUploadedAtEpoch( HINTERNET request ) {
+    char* body = new char[MaxResponseSize + 1];
+    DWORD total = 0;
+    DWORD read = 0;
+    while( total < MaxResponseSize &&
+        WinHttpReadData( request, body + total, MaxResponseSize - total, &read ) && read > 0 )
+      total += read;
+    body[total] = 0;
+
+    __int64 epoch = 0;
+    const char* timestamp = strstr( body, "\"uploaded_at_epoch\":" );
+    if( timestamp )
+      epoch = _atoi64( timestamp + 20 );
+    delete[] body;
+    return epoch;
+  }
+
   DWORD WINAPI UploadThread( void* argument ) {
     UploadJob* job = (UploadJob*)argument;
+    UploadGuard guard;
     SyncLog::Write( "UploadThread: id='%s' path='%s' server='%s'",
       job->saveID, job->packagePath, job->serverUrl );
     Url url;
@@ -414,6 +537,18 @@ namespace {
     MultiByteToWideChar( CP_UTF8, 0, job->saveID, -1, saveID, _countof(saveID) );
     _snwprintf_s( path, _countof(path), _TRUNCATE, L"%s/saves/%s", url.path, saveID );
     wcscpy_s( url.path, path );
+
+    // shortcut: base epoch is only known after the startup fetch; if the server was down at startup uploads overwrite.
+    __int64 baseEpoch = 0;
+    if( !job->force ) {
+      EnterCriticalSection( &RemoteLock );
+      for( unsigned int index = 0; index < RemoteSaveCount; ++index )
+        if( strcmp( RemoteSaves[index].saveID, job->saveID ) == 0 ) {
+          baseEpoch = RemoteSaves[index].uploadedAt;
+          break;
+        }
+      LeaveCriticalSection( &RemoteLock );
+    }
 
     FILE* package = 0;
     fopen_s( &package, job->packagePath, "rb" );
@@ -451,13 +586,16 @@ namespace {
       delete job;
       return 0;
     }
-    wchar_t headers[256];
-    _snwprintf_s( headers, _countof(headers), _TRUNCATE,
+    wchar_t headers[512];
+    int headersLength = _snwprintf_s( headers, _countof(headers), _TRUNCATE,
       L"Content-Type: multipart/form-data; boundary=%S\r\n", boundary );
-      
+    if( baseEpoch > 0 )
+      _snwprintf_s( headers + headersLength, _countof(headers) - headersLength, _TRUNCATE,
+        L"X-Base-Epoch: %lld\r\n", (long long)baseEpoch );
+
     bool sent = WinHttpSendRequest( request, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA,
       0, (DWORD)bodyLength, 0 ) != 0;
-      
+
     if( sent ) {
       DWORD bytesWritten = 0;
       sent = WinHttpWriteData( request, prefix, (DWORD)prefixLength, &bytesWritten ) != 0;
@@ -471,7 +609,7 @@ namespace {
         sent = WinHttpWriteData( request, buffer, (DWORD)readBytes, &bytesWritten ) != 0;
       }
     }
-    
+
     fclose( package );
 
     if( sent ) {
@@ -482,16 +620,22 @@ namespace {
     if( sent )
       sent = WinHttpReceiveResponse( request, 0 ) != 0;
 
+    DWORD statusCode = 0;
     if( sent ) {
-      DWORD statusCode = 0;
-      DWORD size = sizeof(statusCode);
-      WinHttpQueryHeaders( request,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size,
-        WINHTTP_NO_HEADER_INDEX );
+      statusCode = QueryStatusCode( request );
       SyncLog::Write( "UploadThread: server responded HTTP %u", statusCode );
     } else {
       SyncLog::Write( "UploadThread: send/receive failed (err=%u)", GetLastError() );
+    }
+
+    if( statusCode == 409 ) {
+      SyncLog::Write( "UploadThread: server has a newer save, upload rejected" );
+      InterlockedExchange( &ConflictDetected, 1 );
+    } else if( statusCode == 201 ) {
+      __int64 uploadedAt = ReadUploadedAtEpoch( request );
+      SyncLog::Write( "UploadThread: uploaded_at_epoch=%lld", uploadedAt );
+      if( uploadedAt > 0 )
+        UpdateRemoteSave( job->saveID, uploadedAt );
     }
 
     WinHttpCloseHandle( request );
@@ -504,6 +648,8 @@ namespace {
 
 namespace RemoteSync {
   void Start() {
+    InitializeCriticalSection( &RemoteLock );
+    InitializeCriticalSection( &UploadLock );
     SyncLog::Write( "RemoteSync::Start()" );
     char serverUrl[1024] = {};
     if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) ) {
@@ -511,6 +657,8 @@ namespace RemoteSync {
       return;
     }
     strcpy_s( ConfiguredServerUrl, serverUrl );
+    if( !ReadApiToken( ConfiguredApiToken, sizeof(ConfiguredApiToken) ) )
+      SyncLog::Write( "RemoteSync::Start: no ApiToken, requests will not send X-API-Key" );
     SyncLog::Write( "RemoteSync::Start: launching startup thread for '%s'", serverUrl );
     char* argument = new char[strlen(serverUrl) + 1];
     strcpy_s( argument, strlen(serverUrl) + 1, serverUrl );
@@ -537,6 +685,15 @@ namespace RemoteSync {
       case UI_IDLE: {
         if( ConfiguredServerUrl[0] == 0 )
           break;
+
+        // Step 0: an upload was rejected (409) since the last check.
+        if( InterlockedExchange( &ConflictDetected, 0 ) == 1 ) {
+          GameUi::ShowWarning( "GothicSaveSync",
+            "El servidor tiene una partida mas reciente.\nNo se ha subido la tuya.\nUsa F10 > Gestion manual de partidas para elegir cual conservar." );
+          CurrentUiPhase = UI_SERVER_STATUS_SHOWN;
+          return;
+        }
+
         LONG status = InterlockedCompareExchange( &ServerStatus, 0, 0 );
 
         // Step 1: show server status once.
@@ -603,7 +760,7 @@ namespace RemoteSync {
 
           case GameUi::MENUITEM_UPLOAD_SAVE:
             if( SaveSync::GetLatestPackagePath()[0] != 0 ) {
-              UploadSave( SaveSync::GetLatestSaveID(), SaveSync::GetLatestPackagePath() );
+              UploadSave( SaveSync::GetLatestSaveID(), SaveSync::GetLatestPackagePath(), true );
               GameUi::ShowInfo( "GothicSaveSync",
                 "Enviando ultimo guardado al servidor..." );
             } else {
@@ -705,8 +862,8 @@ namespace RemoteSync {
       CloseHandle( CreateThread( 0, 0, DownloadThread, serverUrl, 0, 0 ) );
     }
 
-  void UploadSave( const char* saveID, const char* packagePath ) {
-    SyncLog::Write( "UploadSave: id='%s' path='%s'", saveID, packagePath );
+  void UploadSave( const char* saveID, const char* packagePath, bool force ) {
+    SyncLog::Write( "UploadSave: id='%s' path='%s' force=%d", saveID, packagePath, force ? 1 : 0 );
     char serverUrl[1024] = {};
     if( !ReadServerUrl( serverUrl, sizeof(serverUrl) ) ) {
       SyncLog::Write( "UploadSave: no server URL" );
@@ -716,6 +873,7 @@ namespace RemoteSync {
     strcpy_s( job->saveID, saveID );
     strcpy_s( job->packagePath, packagePath );
     strcpy_s( job->serverUrl, serverUrl );
+    job->force = force;
     SyncLog::Write( "UploadSave: launching upload thread" );
     CloseHandle( CreateThread( 0, 0, UploadThread, job, 0, 0 ) );
   }
@@ -732,18 +890,10 @@ namespace RemoteSync {
     if( !zoptions || ConfiguredServerUrl[0] == 0 ) return;
 
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
 
     char packageDir[MAX_PATH];
     char packagePath[MAX_PATH];
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( packageDir, sizeof(packageDir), _TRUNCATE, "%s%ssave-sync\\pending",
-        gameDirectory.ToChar(), saveDirectory );
-    } else {
-      _snprintf_s( packageDir, sizeof(packageDir), _TRUNCATE, "%s\\%s\\save-sync\\pending",
-        gameDirectory.ToChar(), saveDirectory );
-    }
+    if( !PendingDirectory( packageDir, sizeof(packageDir) ) ) return;
     SaveSync::EnsureDirectory( packageDir );
     _snprintf_s( packagePath, sizeof(packagePath), _TRUNCATE, "%s\\%s.gss", packageDir, slotName );
 
@@ -752,18 +902,23 @@ namespace RemoteSync {
       SyncLog::Write( "UploadSlot: PackSlotToFile failed" );
       return;
     }
-    UploadSave( slotName, packagePath );
+    UploadSave( slotName, packagePath, true );
   }
 
   void DownloadSlotBySaveID( const char* saveID ) {
     if( ConfiguredServerUrl[0] == 0 || !saveID || saveID[0] == 0 ) return;
 
-    RemoteSave save = {};
-    strcpy_s( save.saveID, saveID );
-    save.uploadedAt = 0;
-
     SyncLog::Write( "DownloadSlotBySaveID: '%s'", saveID );
-    DownloadSave( ConfiguredServerUrl, save );
+    DownloadSlotJob* job = new DownloadSlotJob();
+    strcpy_s( job->serverUrl, ConfiguredServerUrl );
+    strcpy_s( job->save.saveID, saveID );
+    job->save.uploadedAt = 0;
+
+    HANDLE thread = CreateThread( 0, 0, DownloadSlotThread, job, 0, 0 );
+    if( thread )
+      CloseHandle( thread );
+    else
+      delete job;
   }
 
   int FetchRemoteSlotList( RemoteSlotInfo* slots, int maxSlots ) {
@@ -771,16 +926,18 @@ namespace RemoteSync {
 
     FetchRemoteSaves( ConfiguredServerUrl );
     unsigned int count = ReadRemoteSaves();
+    RemoteSave saves[_countof(RemoteSaves)];
+    count = count > 0 ? CopyRemoteSaves( saves ) : 0;
 
     int result = 0;
     for( unsigned int i = 0; i < count && result < maxSlots; ++i ) {
-      strcpy_s( slots[result].saveID, RemoteSaves[i].saveID );
-      slots[result].uploadedAtEpoch = RemoteSaves[i].uploadedAt;
+      strcpy_s( slots[result].saveID, saves[i].saveID );
+      slots[result].uploadedAtEpoch = saves[i].uploadedAt;
       slots[result].size = 0;
 
       // Convert epoch to human-readable date.
-      if( RemoteSaves[i].uploadedAt > 0 ) {
-        time_t t = (time_t)RemoteSaves[i].uploadedAt;
+      if( saves[i].uploadedAt > 0 ) {
+        time_t t = (time_t)saves[i].uploadedAt;
         struct tm local;
         localtime_s( &local, &t );
         _snprintf_s( slots[result].dateStr, sizeof(slots[result].dateStr), _TRUNCATE,
@@ -798,20 +955,15 @@ namespace RemoteSync {
 
   bool RestoreBackupForSlot( int slotID ) {
     if( slotID < 0 || !zoptions ) return false;
-    Common::string gameDirectory = UnionCore::Union.GetGameDirectory();
-    const char* saveDirectory = zoptions->GetDirString( DIR_SAVEGAMES ).ToChar();
     const char* slotName = UnionCore::TSaveLoadGameInfo::GetSaveSlotName( slotID ).ToChar();
 
+    char saveRoot[MAX_PATH];
+    if( !SaveSync::GetSaveRoot( saveRoot, sizeof(saveRoot) ) ) return false;
     char root[MAX_PATH];
     char source[MAX_PATH];
     char backup[MAX_PATH];
-    if( saveDirectory[0] == '\\' || saveDirectory[0] == '/' ) {
-      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s%ssave-sync", gameDirectory.ToChar(), saveDirectory );
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s%s%s", gameDirectory.ToChar(), saveDirectory, slotName );
-    } else {
-      _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\%s\\save-sync", gameDirectory.ToChar(), saveDirectory );
-      _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s\\%s", gameDirectory.ToChar(), saveDirectory, slotName );
-    }
+    _snprintf_s( root, sizeof(root), _TRUNCATE, "%s\\save-sync", saveRoot );
+    _snprintf_s( source, sizeof(source), _TRUNCATE, "%s\\%s", saveRoot, slotName );
     _snprintf_s( backup, sizeof(backup), _TRUNCATE, "%s\\backup\\%s", root, slotName );
 
     if( GetFileAttributesA( backup ) == INVALID_FILE_ATTRIBUTES ) {
